@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Pigeon — connects to your email accounts and only notifies you when a message truly needs your attention.",
-  "packageManager": "pnpm@9.12.0",
+  "packageManager": "pnpm@10.16.0",
   "scripts": {
     "dev": "pnpm --parallel --filter @pigeon/frontend --filter @pigeon/backend dev",
     "dev:frontend": "pnpm --filter @pigeon/frontend dev",

@@ -1,7 +1,7 @@
 # Commands
 
 Frequently-used commands for the Pigeon monorepo. Run from the repo root
-unless noted. Requires Node 22 (`nvm use`) and pnpm 9.
+unless noted. Requires Node 22 (`nvm use`) and pnpm 10 (≥ 10.16).
 
 # Development
 
