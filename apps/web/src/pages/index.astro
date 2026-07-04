@@ -1,0 +1,27 @@
+---
+import "../styles/global.css";
+import Dashboard from "../components/Dashboard";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Pigeon — get notified only when an email truly needs your attention."
+    />
+    <title>Pigeon — calm email</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;450;500;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <Dashboard client:only="solid-js" />
+  </body>
+</html>

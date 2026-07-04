@@ -1,0 +1,16 @@
+Simple, done for you.
+
+The whole flow is probably to process email and then either do nothing, put something in your calendar, or reply.
+
+mailpigeon should probably connect with your calendar to do this agentically.
+
+mailpigeon should probably be saving if emails you have sent are written by you or by mailpigeon. When you agentically reply, it should look at the emails that you have sent personally to that address and use that as inspiration for tone of voice.
+
+The email categories are probably:
+-requires action (like a reply, picking up a parcel, RSVP)
+-is important (your package will be delivered at xyz, we will charge xyz money then and then)
+-is unimportant (newsletters, your parcel has been handed over the the post office, receiving discounts, etc.
+
+People should probably be able to categorise between important vs unimportant per their own llm instructions
+
+When you set quiet mode, its probably nice to send users a msg 'hey we're still here and everything is working fine, its just been quiet' instead of letting them wonder if things are still allright.

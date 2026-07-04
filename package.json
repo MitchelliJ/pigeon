@@ -1,0 +1,28 @@
+{
+  "name": "pigeon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pigeon — connects to your email accounts and only notifies you when a message truly needs your attention.",
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/*\" --filter \"./tools/*\" dev",
+    "dev:web": "pnpm --filter @pigeon/web dev",
+    "dev:api": "pnpm --filter @pigeon/api dev",
+    "dev:server": "pnpm --filter @pigeon/server dev",
+    "dev:worker": "pnpm --filter @pigeon/worker dev",
+    "dev:db": "pnpm --filter @pigeon/devdb dev",
+    "migrate": "pnpm --filter @pigeon/db migrate",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "build": "pnpm --filter @pigeon/web build",
+    "preview": "pnpm --filter @pigeon/web preview"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

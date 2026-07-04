@@ -1,0 +1,28 @@
+{
+  "name": "@pigeon/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pigeon/config": "workspace:*",
+    "@pigeon/db": "workspace:*",
+    "@pigeon/deliver": "workspace:^",
+    "@pigeon/llm": "workspace:^",
+    "@pigeon/mail": "workspace:^",
+    "@pigeon/queue": "workspace:^",
+    "@pigeon/quota": "workspace:^",
+    "@pigeon/shared": "workspace:*",
+    "@pigeon/vault": "workspace:^",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  }
+}

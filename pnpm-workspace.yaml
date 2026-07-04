@@ -1,0 +1,15 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "tools/*"
+
+# --- Supply-chain safety -----------------------------------------------------
+# Never install a package version that was published less than 24h ago.
+# Newly-published versions are where compromised/malicious releases surface;
+# the cooldown gives the community time to flag and yank them first.
+# Value is in MINUTES (24 * 60 = 1440). Requires pnpm >= 10.16.
+minimumReleaseAge: 1440
+# Add `name` or `name@version` entries here to bypass the cooldown for a
+# genuine critical hotfix, e.g.:
+# minimumReleaseAgeExclude:
+#   - some-package@1.2.3

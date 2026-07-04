@@ -1,0 +1,27 @@
+node_modules/
+dist/
+.astro/
+.output/
+.vercel/
+.netlify/
+build/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# env
+.env
+.env.*
+!.env.example
+
+# local dev database (embedded postgres data dir)
+.pgdata/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/

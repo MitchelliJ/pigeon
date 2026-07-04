@@ -1,0 +1,8 @@
+---
+import Page from "../layouts/Page.astro";
+import AuthForm from "../components/AuthForm";
+---
+
+<Page title="Log in — Pigeon">
+  <AuthForm mode="login" client:only="solid-js" />
+</Page>

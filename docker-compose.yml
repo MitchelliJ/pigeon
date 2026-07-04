@@ -1,0 +1,89 @@
+# Pigeon full stack: Postgres + backend + worker (+ one-shot migrations).
+# Local:      cp .env.example .env  (fill VAULT_MASTER_KEY, SESSION_SECRET)
+#             docker compose up --build
+# Production: same file on the Hetzner host; see deploy/hetzner.md.
+#
+# NOTE (written during the no-Docker overnight build): compose config is
+# untested against a live daemon — validate with `docker compose config`
+# before first use.
+
+name: pigeon
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pigeon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pigeon}
+      POSTGRES_DB: pigeon
+      # Real mail requires UTF8 — never the OS default locale.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pigeon -d pigeon"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    working_dir: /app/packages/db
+    command: ["npx", "tsx", "src/migrate-cli.ts"]
+    environment: &appenv
+      NODE_ENV: production
+      DATABASE_URL: postgres://pigeon:${POSTGRES_PASSWORD:-pigeon}@db:5432/pigeon
+      HOST: 0.0.0.0
+      PORT: "8788"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      VAULT_MASTER_KEY: ${VAULT_MASTER_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:4321}
+      API_ORIGIN: ${API_ORIGIN:-http://localhost:8788}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      MISTRAL_MODEL: ${MISTRAL_MODEL:-mistral-small-latest}
+      MOLLIE_API_KEY: ${MOLLIE_API_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      SIGNAL_API_URL: ${SIGNAL_API_URL:-}
+      SIGNAL_SENDER_NUMBER: ${SIGNAL_SENDER_NUMBER:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    environment: *appenv
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment: *appenv
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
