@@ -1,11 +1,10 @@
-# Pigeon full stack: Postgres + backend + worker (+ one-shot migrations).
-# Local:      cp .env.example .env  (fill VAULT_MASTER_KEY, SESSION_SECRET)
-#             docker compose up --build
+# Pigeon single-box stack: Postgres + backend API + worker.
+# Local:      cp .env.example .env  &&  docker compose up --build
 # Production: same file on the Hetzner host; see deploy/hetzner.md.
 #
-# NOTE (written during the no-Docker overnight build): compose config is
-# untested against a live daemon — validate with `docker compose config`
-# before first use.
+# NOTE: written before a live Docker daemon was available — validate with
+# `docker compose config` before first use. The `migrate` step is re-added
+# in feature 1 (infrastructure baseline) once migrations exist.
 
 name: pigeon
 
@@ -27,63 +26,34 @@ services:
       timeout: 5s
       retries: 12
 
-  migrate:
+  server:
     build:
       context: .
-      dockerfile: apps/server/Dockerfile
-    working_dir: /app/packages/db
-    command: ["npx", "tsx", "src/migrate-cli.ts"]
+      dockerfile: backend/Dockerfile
+    command: ["pnpm", "start"]
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
     environment: &appenv
       NODE_ENV: production
       DATABASE_URL: postgres://pigeon:${POSTGRES_PASSWORD:-pigeon}@db:5432/pigeon
       HOST: 0.0.0.0
       PORT: "8788"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      VAULT_MASTER_KEY: ${VAULT_MASTER_KEY}
-      SESSION_SECRET: ${SESSION_SECRET}
-      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:4321}
-      API_ORIGIN: ${API_ORIGIN:-http://localhost:8788}
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
-      MISTRAL_MODEL: ${MISTRAL_MODEL:-mistral-small-latest}
-      MOLLIE_API_KEY: ${MOLLIE_API_KEY:-}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
-      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
-      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
-      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
-      SIGNAL_API_URL: ${SIGNAL_API_URL:-}
-      SIGNAL_SENDER_NUMBER: ${SIGNAL_SENDER_NUMBER:-}
     depends_on:
       db:
         condition: service_healthy
-    restart: "no"
-
-  server:
-    build:
-      context: .
-      dockerfile: apps/server/Dockerfile
-    restart: unless-stopped
-    ports:
-      - "8788:8788"
-    environment: *appenv
-    depends_on:
-      db:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
 
   worker:
     build:
       context: .
-      dockerfile: apps/worker/Dockerfile
+      dockerfile: backend/Dockerfile
+    command: ["pnpm", "start:worker"]
     restart: unless-stopped
     environment: *appenv
     depends_on:
       db:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
 
 volumes:
   pgdata:

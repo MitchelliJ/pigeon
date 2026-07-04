@@ -1,7 +1,7 @@
 packages:
-  - "apps/*"
-  - "packages/*"
-  - "tools/*"
+  - "frontend"
+  - "backend"
+  - "shared"
 
 # --- Supply-chain safety -----------------------------------------------------
 # Never install a package version that was published less than 24h ago.

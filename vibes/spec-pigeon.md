@@ -1,122 +1,119 @@
 # Project Specification — 🕊️ Pigeon
 
-> Connect your inboxes. Get notified only when something *actually* needs you.
+> Connect your inboxes. Get one calm, ranked digest — and an instant nudge only
+> when something actually needs you.
 
 ---
 
 ## 1. Project description
 
-Pigeon is a email-triage SaaS that watches your inboxes and gives
-you back your attention. Instead of living in your email, you connect your
-mailboxes and a messaging channel you already use, and Pigeon summarizes each
-incoming email in one sentence and decides whether it actually needs you. You
-choose how it reaches you: a once-a-day digest of everything, or an immediate
-nudge only when something urgent arrives.
+Pigeon is an email-triage SaaS that watches your inboxes and gives you back your
+attention. Instead of living in your email, you connect your mailboxes and a
+messaging channel you already use. For every incoming email, Pigeon writes a
+one-sentence summary and sorts it into one of three buckets — *requires action*,
+*important*, or *status/noise*. It then reaches you the way you chose: a
+once-a-day digest of everything (ranked, most important first), or a quiet mode
+that stays silent until a *requires action* email arrives and then nudges you
+immediately with a full email summary.
 
-It is built to be run on a single Hetzner server.
+The promise is **simple and done-for-you**: no rules to build, no dashboards to
+babysit. You keep working; Pigeon handles the watching, decides what deserves
+your attention, and tells you in one place.
+
+**Why it should exist:** people juggling several low-traffic inboxes either check
+them all obsessively or miss the one message that mattered. Existing tools make
+you build filters and live in the client. Pigeon inverts that — it does the
+triage for you and only reaches out through a channel you already have open,
+turning many noisy inboxes into a single, trustworthy signal.
+
+It is built to run on a single Hetzner EU server, favoring solutions that add no
+extra stateful infrastructure.
 
 ---
 
 ## 2. Intended users
 
 **Primary**
-- **people with multiple email accounts** that dont send emails every day but want to stay on top of things.
+- People with **multiple email accounts** that don't get daily mail but who
+  still want to stay on top of the things that matter, without checking each
+  inbox.
+
+There is a single user role: the account owner who connects mailboxes and a
+channel and receives digests. (A billing/admin surface exists but is the same
+person.)
 
 ---
 
-## 3. Feature list
+## 3. Initial capabilities
 
-Features are ordered as a **walking skeleton**: features 1–8 deliver a usable
-product (connect a mailbox → sync → summarize → deliver to Discord); 9–11 turn
-it into a business; 12–13 broaden providers and channels. Each feature becomes
-its own PRD, where implementation and library choices are decided.
+Ordered as a **walking skeleton** by build dependency: 1–8 deliver a usable
+product (connect a mailbox → sync → summarize → classify → deliver to Discord);
+9–10 make it a business; 11–12 broaden reach. Each becomes its own PRD.
 
-1. **Project initialization & infrastructure baseline** — Stand up our own
-   backend and a worker runtime in the existing monorepo, with the database,
-   migrations, configuration/secret loading, containerized local + Hetzner
-   deployment, and CI (no business logic).
-2. **Authentication & user accounts** — Sign-up, login, and session management
-   (including OAuth) that every other resource attaches to.
-3. **Inbox connectors (IMAP/POP3) & provider abstraction** — A connect-mailbox
-   flow with connection testing and encrypted credential storage, behind a
-   provider-agnostic interface designed to admit OAuth providers later.
-4. **Incremental sync engine & watermarks** — Per-mailbox, protocol-aware
-   tracking of what has already been seen, plus deduplication, so only genuinely
-   new messages are ever surfaced.
-5. **Job queue, workers & scheduler** — A durable background job queue backed by
-   the existing database (no extra infrastructure) with a cron trigger that
-   enqueues sync work and worker processes that execute it idempotently. The cron job has different time intervals based on the user plans (configurable).
-6. **LLM processing (summarize + classify)** — For each new email, a single Mistral LLM
-   call that returns a one-sentence summary, and a classification
-   flag, persisted before the mailbox watermark advances.
-7. **Channel connectors & delivery modes (Discord)** — A channel abstraction
-   plus Discord delivery, offering each user a choice between a scheduled daily
-   digest and urgent-only immediate notifications.
-9. **Plans, tiers, limits & quota enforcement** — Subscription tiers that cap
-   inbox count, sync frequency, and monthly emails processed, enforced at
-   enqueue/processing time with usage counters.
-10. **Payment integration & subscription lifecycle** — Mollie checkout,
-    webhooks, and a billing portal that keep a user's active tier (and therefore
-    their limits) in sync with their subscription state.
-10. **OAuth provider connectors (Gmail / Microsoft)** *(later)* — Add OAuth-based
-    Gmail and Microsoft mailboxes to the connector abstraction, honoring each
-    provider's scope, verification, and security requirements.
-13. **Additional channels (WhatsApp, Signal)** *(later)* — Extend the channel
-    abstraction to WhatsApp and Signal once Discord has proven the model.
+1. **Project initialization & infrastructure baseline** — Stand up the backend and worker runtime in the monorepo with database, migrations, config/secret loading, containerized local + Hetzner deployment, and CI (no business logic).
+2. **Authentication & user accounts** — Provide sign-up, login, and session management that every other resource attaches to.
+3. **Inbox connectors (IMAP/POP3) & provider abstraction** — Offer a connect-mailbox flow with connection testing and encrypted credential storage behind a provider-agnostic interface ready for OAuth later.
+4. **Incremental sync engine & watermarks** — Track per-mailbox what has already been seen and deduplicate so only genuinely new messages are ever surfaced.
+5. **Job queue, workers & scheduler** — Run a durable, database-backed background job queue with a plan-configurable cron trigger that enqueues sync work executed idempotently by workers.
+6. **LLM processing (summarize + classify)** — For each new email, make a single Mistral call returning a one-sentence summary and one of the three categories, honoring the user's plain-language classification instructions.
+7. **Channel connectors & delivery modes (Discord)** — Deliver ranked digests to Discord in either daily-digest or quiet mode, built one-way but structured so two-way can be added later.
+8. **Quiet-mode reassurance / heartbeat** — Send periodic "still here, all is well" messages during quiet stretches so silence never reads as failure.
+9. **Plans, tiers, limits & quota enforcement** — Enforce subscription tiers that cap inbox count, sync frequency, and monthly emails processed at enqueue/processing time.
+10. **Payment integration & subscription lifecycle** — Use Mollie checkout, webhooks, and a billing portal to keep each user's active tier (and limits) in sync with their subscription.
+11. **OAuth provider connectors (Gmail / Microsoft)** *(later)* — Add OAuth-based Gmail and Microsoft mailboxes to the connector abstraction, honoring each provider's scope and verification requirements.
+12. **Additional channels (WhatsApp, Signal)** *(later)* — Extend the channel abstraction once Discord has proven the model.
+
+> **Deferred but kept architecturally open:** two-way channel conversations and
+> an agentic action layer (calendar writes, drafting/sending replies, per-contact
+> tone learning that distinguishes mail *you* wrote from mail *Pigeon* wrote).
+> None of this ships now; today's data model and processing loop must not make it
+> hard to add.
 
 ---
 
 ## 4. Main screens
 
-The dashboard is a single calm web app, already prototyped against the mock API.
-Key surfaces:
+A single calm web app. Key surfaces:
 
-- **Dashboard / Inbox overview** — Hero greeting, priority stat cards
-  (urgent / important / everything), last-sync indicator, and a feed of triaged
-  emails each showing its one-sentence summary, source account, priority badge,
-  and (for urgent items) a suggested action.
-- **Accounts (mailboxes)** — Connected mailboxes with provider badge, status
-  (connected/syncing/error), and unread count; a "connect mailbox" flow for
-  IMAP/POP3 (and later OAuth providers).
-- **Channels** — Connected messaging channels (Discord first), each with its
-  configuration and the minimum priority that reaches it.
-- **Digest settings** — Toggle daily digest vs. urgent-only, with delivery time,
-  weekdays, and target channel.
+- **Dashboard / Inbox overview** — Hero greeting, category stat cards (requires action / important / status), last-sync indicator, and a feed of triaged emails each showing its one-sentence summary, source account, and category badge.
+- **Accounts (mailboxes)** — Connected mailboxes with provider badge and status (connected/syncing/error), plus a connect-mailbox flow for IMAP/POP3 (and later OAuth).
+- **Channels** — Connected messaging channels (Discord first), each with its configuration.
+- **Delivery settings** — Choose daily digest vs. quiet mode, delivery time, weekdays, target channel, and personal classification instructions.
 - **Auth screens** — Sign-up, login, and account/session management.
-- **Billing & plan** — Current tier and limits, usage against the monthly quota,
-  upgrade/downgrade, and Mollie-hosted checkout/portal entry points.
-- **Privacy & data** — Consent status, data export request, and account/data
-  deletion (GDPR).
+- **Billing & plan** — Current tier and limits, usage against the monthly quota, upgrade/downgrade, and Mollie-hosted checkout/portal entry points.
+- **Privacy & data** — Consent status, data export request, and account/data deletion (GDPR).
 
 ---
 
-## 5. Cross-cutting principles (carried into every PRD)
+## 5. Triage model (reference)
 
-- **Cron triggers, workers do the work.** No real work runs in the cron tick or
-  the request path; everything heavy is a durable, retryable background job.
-- **Idempotency & dedupe.** Re-running any job must never double-summarize or
-  double-notify; deduplicate before the LLM call and before sending.
-- **Watermark before spend.** Never call the LLM or notify for an email at or
-  below a mailbox's watermark.
-- **Quotas at the edge.** Tier limits (inboxes, frequency, monthly volume) are
-  enforced at enqueue/processing time, not after the work is done.
-- **Secrets always encrypted at rest.** No plaintext credentials, tokens, or
-  webhooks in the database or logs.
-- **GDPR by default.** EU hosting, data minimization, consent, export, and
-  erasure are designed in from feature 1, not retrofitted.
-- **Provider/channel abstraction.** Inbox and channel connectors sit behind
-  stable interfaces so Gmail/Microsoft and WhatsApp/Signal slot in without
-  reworking the core loop.
+Every new email yields a **one-sentence summary** plus one **category**:
+
+- **Requires action** — you personally need to do something (reply, RSVP, pick up a parcel, pay something manually).
+- **Important** — no action needed, but you should know (a delivery is arriving; you'll be charged an amount on a date).
+- **Status / noise** — newsletters, "handed to the carrier" updates, discounts, receipts, general FYI.
+
+Users steer the *important vs. status* line via their own plain-language
+instructions. Digests always rank *requires action* first, then *important*, then
+*status/noise*.
 
 ---
 
-## 6. Constraints & givens
+## 6. Cross-cutting principles (carried into every PRD)
 
-- **Single box:** everything (app, workers, database) runs on one Hetzner EU
-  machine; favor solutions that add no extra stateful services.
-- **TypeScript** across the stack; **our own backend API** (the current mock is
-  a temporary stand-in, phased out as real data lands).
-- **Database:** PostgreSQL with hand-written SQL (no ORM); the job queue rides on
-  this same database.
-- **Fixed external services:** Mistral (LLM) and Mollie (payments), both
-  EU-aligned.
+- **Cron triggers, workers do the work.** Nothing heavy runs in the cron tick or request path; it's a durable, retryable background job.
+- **Idempotency & dedupe.** Re-running any job never double-summarizes or double-notifies.
+- **Watermark before spend.** Never call the LLM or notify for an email at or below a mailbox's watermark.
+- **Quotas at the edge.** Tier limits are enforced at enqueue/processing time, not after the work is done.
+- **Secrets always encrypted at rest.** No plaintext credentials, tokens, or webhooks in the database or logs.
+- **GDPR by default.** EU hosting, data minimization, consent, export, and erasure are designed in from feature 1.
+- **Abstractions ready to grow.** Inbox and channel connectors sit behind stable interfaces; delivery anticipates two-way and the storage/processing model anticipates a later agentic layer — without building either now.
+
+---
+
+## 7. Constraints & givens
+
+- **Single box:** app, workers, and database run on one Hetzner EU machine; favor solutions that add no extra stateful services.
+- **TypeScript** across the stack, with our own backend API.
+- **Database:** PostgreSQL with hand-written SQL (no ORM); the job queue rides on this same database.
+- **Fixed external services:** Mistral (LLM) and Mollie (payments), both EU-aligned.
