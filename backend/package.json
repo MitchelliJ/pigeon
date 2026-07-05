@@ -9,7 +9,8 @@
     "start": "tsx src/server.ts",
     "start:worker": "tsx src/worker.ts",
     "typecheck": "tsc --noEmit",
-    "migrate": "tsx src/migrate/cli.ts"
+    "migrate": "tsx src/migrate/cli.ts",
+    "invite": "tsx src/auth/invite-cli.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

@@ -3,10 +3,23 @@
  * cookie sessions. Every call sends credentials; 401 anywhere but the auth
  * endpoints bounces to /login.
  */
-import type { DashboardData, PlanTier, Priority, Weekday } from "@pigeon/shared";
+import type {
+  DashboardData,
+  LoginInput,
+  PlanTier,
+  Priority,
+  ResetPasswordInput,
+  ResetRequestInput,
+  SessionUser,
+  SignupInput,
+  VerifyEmailInput,
+  Weekday,
+} from "@pigeon/shared";
 
-export const API_BASE =
-  import.meta.env.PUBLIC_API_BASE ?? "http://localhost:8788";
+// Empty string = same-origin, which is what production (and the dev proxy
+// configured in astro.config.mjs) both want. Only staging/cross-origin setups
+// need PUBLIC_API_BASE.
+export const API_BASE = import.meta.env.PUBLIC_API_BASE ?? "";
 
 export class ApiError extends Error {
   constructor(
@@ -53,28 +66,46 @@ async function call<T>(
 
 // ---- auth ------------------------------------------------------------
 
-export interface SessionUser {
-  id: string;
-  email: string;
-  name: string;
-  tier: string;
-}
-
 export const auth = {
-  signup: (input: { email: string; password: string; name?: string }) =>
-    call<{ user: SessionUser }>("/api/auth/signup", {
+  signup: (input: SignupInput) =>
+    call<{ status: string }>("/api/auth/signup", {
       method: "POST",
       body: JSON.stringify(input),
       redirectOn401: false,
     }),
-  login: (input: { email: string; password: string }) =>
+  login: (input: LoginInput) =>
     call<{ user: SessionUser }>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify(input),
       redirectOn401: false,
     }),
   logout: () => call<{ ok: true }>("/api/auth/logout", { method: "POST" }),
-  me: () => call<{ user: SessionUser }>("/api/auth/me", { redirectOn401: false }),
+  me: () =>
+    call<{ user: SessionUser }>("/api/auth/me", { redirectOn401: false }),
+  verifyEmail: (token: string) =>
+    call<{ user: SessionUser }>("/api/auth/verify", {
+      method: "POST",
+      body: JSON.stringify({ token } satisfies VerifyEmailInput),
+      redirectOn401: false,
+    }),
+  resendVerify: (email: string) =>
+    call<{ status: string }>("/api/auth/verify/resend", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+      redirectOn401: false,
+    }),
+  requestReset: (email: string) =>
+    call<{ status: string }>("/api/auth/password/reset-request", {
+      method: "POST",
+      body: JSON.stringify({ email } satisfies ResetRequestInput),
+      redirectOn401: false,
+    }),
+  resetPassword: (input: ResetPasswordInput) =>
+    call<{ ok: true }>("/api/auth/password/reset", {
+      method: "POST",
+      body: JSON.stringify(input),
+      redirectOn401: false,
+    }),
 };
 
 // ---- dashboard -------------------------------------------------------
@@ -96,9 +127,15 @@ export const mailboxes = {
     tls: boolean;
     username: string;
     password: string;
-  }) => call<{ mailbox: unknown }>("/api/mailboxes", { method: "POST", body: JSON.stringify(input) }),
-  remove: (id: string) => call<{ ok: true }>(`/api/mailboxes/${id}`, { method: "DELETE" }),
-  syncNow: (id: string) => call<{ ok: true }>(`/api/mailboxes/${id}/sync`, { method: "POST" }),
+  }) =>
+    call<{ mailbox: unknown }>("/api/mailboxes", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  remove: (id: string) =>
+    call<{ ok: true }>(`/api/mailboxes/${id}`, { method: "DELETE" }),
+  syncNow: (id: string) =>
+    call<{ ok: true }>(`/api/mailboxes/${id}/sync`, { method: "POST" }),
 };
 
 // ---- channels & delivery settings -------------------------------------
@@ -109,17 +146,32 @@ export const channels = {
     label: string;
     config: Record<string, string>;
     minPriority: Priority;
-  }) => call<{ channel: unknown }>("/api/channels", { method: "POST", body: JSON.stringify(input) }),
+  }) =>
+    call<{ channel: unknown }>("/api/channels", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   update: (
     id: string,
-    patch: { label?: string; enabled?: boolean; minPriority?: Priority; config?: Record<string, string> },
-  ) => call<{ channel: unknown }>(`/api/channels/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  remove: (id: string) => call<{ ok: true }>(`/api/channels/${id}`, { method: "DELETE" }),
-  test: (id: string) => call<{ ok: true }>(`/api/channels/${id}/test`, { method: "POST" }),
+    patch: {
+      label?: string;
+      enabled?: boolean;
+      minPriority?: Priority;
+      config?: Record<string, string>;
+    },
+  ) =>
+    call<{ channel: unknown }>(`/api/channels/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  remove: (id: string) =>
+    call<{ ok: true }>(`/api/channels/${id}`, { method: "DELETE" }),
+  test: (id: string) =>
+    call<{ ok: true }>(`/api/channels/${id}/test`, { method: "POST" }),
   supported: () =>
-    call<{ channels: unknown[]; supportedKinds: string[] }>("/api/channels").then(
-      (r) => r.supportedKinds,
-    ),
+    call<{ channels: unknown[]; supportedKinds: string[] }>(
+      "/api/channels",
+    ).then((r) => r.supportedKinds),
 };
 
 export const deliverySettings = {
@@ -130,7 +182,11 @@ export const deliverySettings = {
     digestChannelId?: string;
     timezone?: string;
     quietReassurance?: boolean;
-  }) => call<{ settings: unknown }>("/api/settings/delivery", { method: "PATCH", body: JSON.stringify(patch) }),
+  }) =>
+    call<{ settings: unknown }>("/api/settings/delivery", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
 };
 
 // ---- profile / AI instructions ----------------------------------------
@@ -143,7 +199,8 @@ export interface Profile {
 }
 
 export const profile = {
-  get: () => call<{ profile: Profile }>("/api/settings/profile").then((r) => r.profile),
+  get: () =>
+    call<{ profile: Profile }>("/api/settings/profile").then((r) => r.profile),
   update: (patch: { name?: string; llmInstructions?: string }) =>
     call<{ profile: Profile }>("/api/settings/profile", {
       method: "PATCH",
@@ -171,14 +228,21 @@ export interface UsageReport {
 export const billing = {
   usage: () => call<UsageReport>("/api/usage"),
   state: () =>
-    call<{ tier: string; subscription: unknown; mode: "mollie" | "sandbox" }>("/api/billing"),
-  checkout: (tier: "pro" | "team") =>
-    call<{ mode: "checkout"; checkoutUrl: string } | { mode: "sandbox"; tier: string }>(
-      "/api/billing/checkout",
-      { method: "POST", body: JSON.stringify({ tier }) },
+    call<{ tier: string; subscription: unknown; mode: "mollie" | "sandbox" }>(
+      "/api/billing",
     ),
+  checkout: (tier: "pro" | "team") =>
+    call<
+      | { mode: "checkout"; checkoutUrl: string }
+      | { mode: "sandbox"; tier: string }
+    >("/api/billing/checkout", {
+      method: "POST",
+      body: JSON.stringify({ tier }),
+    }),
   cancel: () =>
-    call<{ outcome: string }>("/api/billing/subscription", { method: "DELETE" }),
+    call<{ outcome: string }>("/api/billing/subscription", {
+      method: "DELETE",
+    }),
 };
 
 // ---- privacy -----------------------------------------------------------
@@ -204,6 +268,8 @@ export interface OAuthProviderInfo {
 
 export const oauth = {
   providers: () =>
-    call<{ providers: OAuthProviderInfo[] }>("/api/oauth/providers").then((r) => r.providers),
+    call<{ providers: OAuthProviderInfo[] }>("/api/oauth/providers").then(
+      (r) => r.providers,
+    ),
   startUrl: (id: string) => `${API_BASE}/api/oauth/${id}/start`,
 };

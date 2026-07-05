@@ -17,6 +17,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "migrate": "pnpm --filter @pigeon/backend migrate",
+    "invite": "pnpm --filter @pigeon/backend invite",
     "test": "vitest run",
     "check": "pnpm lint && pnpm typecheck",
     "check:all": "pnpm lint && pnpm typecheck && pnpm test",

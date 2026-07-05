@@ -10,7 +10,8 @@
 export type Priority = "urgent" | "important" | "everything";
 
 /** Email providers we know how to render a badge / connect flow for. */
-export type Provider = "gmail" | "outlook" | "icloud" | "fastmail" | "imap" | "mock";
+export type Provider =
+  "gmail" | "outlook" | "icloud" | "fastmail" | "imap" | "mock";
 
 /** A connected mailbox, reached over IMAP/POP3 with an app password. */
 export interface EmailAccount {
@@ -115,6 +116,44 @@ export interface User {
   name: string;
   email: string;
   plan: Plan;
+}
+
+/** The signed-in user as surfaced to the client after authentication. */
+export interface SessionUser {
+  id: string;
+  email: string;
+  name: string;
+  tier: string;
+}
+
+/** Sign-up request body. `name` is REQUIRED. */
+export interface SignupInput {
+  inviteCode: string;
+  email: string;
+  password: string;
+  name: string;
+}
+
+/** Login request body — email + password only. */
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+/** Body for verifying an email address from a signup token. */
+export interface VerifyEmailInput {
+  token: string;
+}
+
+/** Body for requesting a password reset email. */
+export interface ResetRequestInput {
+  email: string;
+}
+
+/** Body for actually resetting a password with a token. */
+export interface ResetPasswordInput {
+  token: string;
+  newPassword: string;
 }
 
 /** Everything the dashboard needs, in one payload. */

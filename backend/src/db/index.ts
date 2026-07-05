@@ -25,7 +25,7 @@ type LooseQuery = (
  * `.sql` file verbatim). `postgres.js`'s `sql.begin` transaction object already
  * exposes `.unsafe`, so the runtime shape matches.
  */
-type TxClient = LooseQuery & { unsafe: (text: string) => Promise<void> };
+export type TxClient = LooseQuery & { unsafe: (text: string) => Promise<void> };
 
 export interface Db {
   query: LooseQuery;

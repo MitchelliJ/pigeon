@@ -4,7 +4,9 @@
  * Validates environment variables with Zod at startup so the process
  * crashes immediately — naming the offending variable — when something
  * is missing or malformed. Secrets are never echoed by describeConfig:
- * it only reports whether DATABASE_URL is set.
+ * it only reports whether DATABASE_URL, MAIL_FROM, and RESEND_API_KEY
+ * are set. APP_BASE_URL is reported as host-only and SIGNUP_OPEN as a
+ * boolean label.
  */
 
 import { z } from "zod";
@@ -18,6 +20,21 @@ const configSchema = z
       .default("development"),
     PORT: z.coerce.number().int().positive().default(8788),
     DATABASE_URL: z.string().optional(),
+    // Base URL of the web app, used to build links in outgoing mail.
+    // A dev/test default is applied in parseConfig; production requires it.
+    APP_BASE_URL: z.string().url().optional(),
+    // Sender address for outgoing mail. Optional in dev; production requires it.
+    MAIL_FROM: z.string().min(1).optional(),
+    // Resend API key. Secret — never echoed. Optional in dev; production requires it.
+    RESEND_API_KEY: z.string().optional(),
+    // Whether new sign-ups are accepted. Accepts the strings "true"/"false"
+    // from env (z.coerce.boolean() would misread "false" as true).
+    SIGNUP_OPEN: z
+      .preprocess(
+        (v) => (v === undefined ? false : v === true || v === "true"),
+        z.boolean(),
+      )
+      .default(false),
     LOG_LEVEL: z
       .enum(["trace", "debug", "info", "warn", "error"])
       .default("info"),
@@ -38,12 +55,32 @@ const configSchema = z
         path: ["DATABASE_URL"],
       });
     }
+    // Production-only required vars. Test env runs without these.
+    const requireInProd = (
+      name: "APP_BASE_URL" | "MAIL_FROM" | "RESEND_API_KEY",
+      value: string | undefined,
+    ) => {
+      if (data.NODE_ENV === "production" && !value) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${name} is required in production`,
+          path: [name],
+        });
+      }
+    };
+    requireInProd("APP_BASE_URL", data.APP_BASE_URL);
+    requireInProd("MAIL_FROM", data.MAIL_FROM);
+    requireInProd("RESEND_API_KEY", data.RESEND_API_KEY);
   });
 
 export type Config = {
   NODE_ENV: "development" | "test" | "production";
   PORT: number;
   DATABASE_URL: string;
+  APP_BASE_URL: string;
+  MAIL_FROM: string | undefined;
+  RESEND_API_KEY: string | undefined;
+  SIGNUP_OPEN: boolean;
   LOG_LEVEL: "trace" | "debug" | "info" | "warn" | "error";
   WORKER_HEARTBEAT_INTERVAL_MS: number;
   HOST: string;
@@ -60,11 +97,18 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
   // case where it can be absent here is development — fall back to the
   // local dev default.
   const DATABASE_URL = parsed.DATABASE_URL ?? DEV_DATABASE_URL;
+  // APP_BASE_URL is required in production (enforced above); in dev/test
+  // fall back to a local default when absent.
+  const APP_BASE_URL = parsed.APP_BASE_URL ?? "http://localhost:4321";
 
   return {
     NODE_ENV: parsed.NODE_ENV,
     PORT: parsed.PORT,
     DATABASE_URL,
+    APP_BASE_URL,
+    MAIL_FROM: parsed.MAIL_FROM,
+    RESEND_API_KEY: parsed.RESEND_API_KEY,
+    SIGNUP_OPEN: parsed.SIGNUP_OPEN,
     LOG_LEVEL: parsed.LOG_LEVEL,
     WORKER_HEARTBEAT_INTERVAL_MS: parsed.WORKER_HEARTBEAT_INTERVAL_MS,
     HOST: parsed.HOST,
@@ -86,11 +130,33 @@ export function describeConfig(
     p?.[k] ?? env[k] ?? "not set";
   // DATABASE_URL is a secret: report only presence, never the raw value.
   const databaseUrl = p?.DATABASE_URL ?? env.DATABASE_URL;
+  // APP_BASE_URL: report host only (no scheme/path), never the full URL.
+  const rawAppBaseUrl = p?.APP_BASE_URL ?? env.APP_BASE_URL;
+  const appBaseUrl = (() => {
+    if (!rawAppBaseUrl) return "not set";
+    try {
+      return new URL(rawAppBaseUrl).host;
+    } catch {
+      return "set";
+    }
+  })();
+  // MAIL_FROM and RESEND_API_KEY are secrets: presence only.
+  const mailFrom = p?.MAIL_FROM ?? env.MAIL_FROM;
+  const resendApiKey = p?.RESEND_API_KEY ?? env.RESEND_API_KEY;
+  // SIGNUP_OPEN: report as a label (not the raw env string).
+  const signupOpen = (() => {
+    const value = p?.SIGNUP_OPEN ?? env.SIGNUP_OPEN === "true";
+    return value ? "enabled" : "disabled";
+  })();
 
   return {
     NODE_ENV: pick("NODE_ENV"),
     PORT: p ? String(p.PORT) : (env.PORT ?? "not set"),
     DATABASE_URL: databaseUrl ? "set" : "not set",
+    APP_BASE_URL: appBaseUrl,
+    MAIL_FROM: mailFrom ? "set" : "not set",
+    RESEND_API_KEY: resendApiKey ? "set" : "not set",
+    SIGNUP_OPEN: signupOpen,
     LOG_LEVEL: pick("LOG_LEVEL"),
     HOST: pick("HOST"),
   };
