@@ -10,10 +10,10 @@
 Pigeon is an email-triage SaaS that watches your inboxes and gives you back your
 attention. Instead of living in your email, you connect your mailboxes and a
 messaging channel you already use. For every incoming email, Pigeon writes a
-one-sentence summary and sorts it into one of three buckets — *requires action*,
-*important*, or *status/noise*. It then reaches you the way you chose: a
+one-sentence summary and sorts it into one of three buckets — _requires action_,
+_important_, or _status/noise_. It then reaches you the way you chose: a
 once-a-day digest of everything (ranked, most important first), or a quiet mode
-that stays silent until a *requires action* email arrives and then nudges you
+that stays silent until a _requires action_ email arrives and then nudges you
 immediately with a full email summary.
 
 The promise is **simple and done-for-you**: no rules to build, no dashboards to
@@ -34,6 +34,7 @@ extra stateful infrastructure.
 ## 2. Intended users
 
 **Primary**
+
 - People with **multiple email accounts** that don't get daily mail but who
   still want to stay on top of the things that matter, without checking each
   inbox.
@@ -60,12 +61,14 @@ product (connect a mailbox → sync → summarize → classify → deliver to Di
 8. **Quiet-mode reassurance / heartbeat** — Send periodic "still here, all is well" messages during quiet stretches so silence never reads as failure.
 9. **Plans, tiers, limits & quota enforcement** — Enforce subscription tiers that cap inbox count, sync frequency, and monthly emails processed at enqueue/processing time.
 10. **Payment integration & subscription lifecycle** — Use Mollie checkout, webhooks, and a billing portal to keep each user's active tier (and limits) in sync with their subscription.
-11. **OAuth provider connectors (Gmail / Microsoft)** *(later)* — Add OAuth-based Gmail and Microsoft mailboxes to the connector abstraction, honoring each provider's scope and verification requirements.
-12. **Additional channels (WhatsApp, Signal)** *(later)* — Extend the channel abstraction once Discord has proven the model.
+11. **OAuth provider connectors (Gmail / Microsoft)** _(later)_ — Add OAuth-based Gmail and Microsoft mailboxes to the connector abstraction, honoring each provider's scope and verification requirements.
+12. **Additional channels (WhatsApp, Signal)** _(later)_ — Extend the channel abstraction once Discord has proven the model.
+13. **Security hardening & rate limiting** _(later)_ — Add brute-force protection and rate limiting on auth and other abuse-prone endpoints (in-memory or DB-backed sliding window, constant-time responses), along with any cross-cutting security review (CSRF, session fixation, audit logging) identified as gaps after the auth and billing features ship.
+14. **Account & session management** _(later)_ — Expand the auth surface beyond the minimal sign-up/login/reset of Feature 2: standalone "log out everywhere," list and revoke active sessions (device/IP/last-seen), change password while logged in, change email (with new-address verification), and self-service account/data deletion (GDPR erasure) designed as a cascade across the user's mailboxes, emails, channels, and billing records.
 
 > **Deferred but kept architecturally open:** two-way channel conversations and
 > an agentic action layer (calendar writes, drafting/sending replies, per-contact
-> tone learning that distinguishes mail *you* wrote from mail *Pigeon* wrote).
+> tone learning that distinguishes mail _you_ wrote from mail _Pigeon_ wrote).
 > None of this ships now; today's data model and processing loop must not make it
 > hard to add.
 
@@ -93,9 +96,9 @@ Every new email yields a **one-sentence summary** plus one **category**:
 - **Important** — no action needed, but you should know (a delivery is arriving; you'll be charged an amount on a date).
 - **Status / noise** — newsletters, "handed to the carrier" updates, discounts, receipts, general FYI.
 
-Users steer the *important vs. status* line via their own plain-language
-instructions. Digests always rank *requires action* first, then *important*, then
-*status/noise*.
+Users steer the _important vs. status_ line via their own plain-language
+instructions. Digests always rank _requires action_ first, then _important_, then
+_status/noise_.
 
 ---
 
