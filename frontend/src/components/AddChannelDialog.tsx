@@ -1,5 +1,11 @@
 import type { JSX } from "solid-js";
-import { createEffect, createResource, createSignal, For, Show } from "solid-js";
+import {
+  createEffect,
+  createResource,
+  createSignal,
+  For,
+  Show,
+} from "solid-js";
 import { Portal } from "solid-js/web";
 import type { ChannelKind, Priority } from "@pigeon/shared";
 import { ApiError, channels as channelsApi } from "../lib/api";
@@ -98,7 +104,11 @@ export default function AddChannelDialog(props: {
       props.onConnected();
       props.onClose();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not reach the Pigeon API.");
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Could not reach the Pigeon API.",
+      );
     } finally {
       setBusy(false);
     }
@@ -107,7 +117,7 @@ export default function AddChannelDialog(props: {
   return (
     <Show when={props.open}>
       <Portal>
-        <div class="modal-overlay" onClick={props.onClose}>
+        <div class="modal-overlay" onClick={() => props.onClose()}>
           <div
             class="modal rise"
             role="dialog"
@@ -124,7 +134,11 @@ export default function AddChannelDialog(props: {
                   </Show>
                 </h2>
               </div>
-              <button class="icon-btn" aria-label="Close" onClick={props.onClose}>
+              <button
+                class="icon-btn"
+                aria-label="Close"
+                onClick={() => props.onClose()}
+              >
                 <CloseIcon />
               </button>
             </div>
@@ -139,16 +153,26 @@ export default function AddChannelDialog(props: {
                 <For each={CHANNELS}>
                   {(c) => {
                     const v = channelVisual(c.kind);
-                    const enabled = () => (supported() ?? ["discord"]).includes(c.kind);
+                    const enabled = () =>
+                      (supported() ?? ["discord"]).includes(c.kind);
                     return (
                       <button
                         class="provider-tile"
                         disabled={!enabled()}
-                        title={enabled() ? "" : "Not enabled on this server yet"}
-                        style={enabled() ? {} : { opacity: "0.45", cursor: "not-allowed" }}
+                        title={
+                          enabled() ? "" : "Not enabled on this server yet"
+                        }
+                        style={
+                          enabled()
+                            ? {}
+                            : { opacity: "0.45", cursor: "not-allowed" }
+                        }
                         onClick={() => enabled() && pick(c.kind)}
                       >
-                        <span class="provider-mark" style={{ background: v.color }}>
+                        <span
+                          class="provider-mark"
+                          style={{ background: v.color }}
+                        >
                           {v.glyph}
                         </span>
                         <span class="provider-name">{c.name}</span>
@@ -170,7 +194,9 @@ export default function AddChannelDialog(props: {
                     class="input"
                     placeholder={meta().name}
                     value={form().label}
-                    onInput={(e) => setForm({ ...form(), label: e.currentTarget.value })}
+                    onInput={(e) =>
+                      setForm({ ...form(), label: e.currentTarget.value })
+                    }
                   />
                 </div>
 
@@ -180,7 +206,9 @@ export default function AddChannelDialog(props: {
                     class="input webhook-input"
                     placeholder={meta().placeholder}
                     value={form().value}
-                    onInput={(e) => setForm({ ...form(), value: e.currentTarget.value })}
+                    onInput={(e) =>
+                      setForm({ ...form(), value: e.currentTarget.value })
+                    }
                   />
                 </div>
 
@@ -192,9 +220,13 @@ export default function AddChannelDialog(props: {
                         <button
                           type="button"
                           class="btn"
-                          classList={{ "btn-primary": form().minPriority === p.value }}
+                          classList={{
+                            "btn-primary": form().minPriority === p.value,
+                          }}
                           style={{ flex: 1 }}
-                          onClick={() => setForm({ ...form(), minPriority: p.value })}
+                          onClick={() =>
+                            setForm({ ...form(), minPriority: p.value })
+                          }
                         >
                           {p.label}
                         </button>

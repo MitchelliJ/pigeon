@@ -1,0 +1,76 @@
+/*
+ * Integration tests for the `@pigeon/backend` migration runner.
+ *
+ * Exercises `runMigrations` against a real embedded Postgres cluster (via the
+ * `withTestDb` harness), asserting the behaviors laid out in the infrastructure
+ * PRD (FR-5..FR-10): initial application, schema_migrations tracking, health
+ * table writability, idempotency, and the out-of-order guard (FR-8).
+ *
+ * RED note: at authoring time `backend/src/migrate/runner.ts` and the
+ * `db/migrations/*.sql` files do not exist yet — the import of `runMigrations`
+ * fails and this file cannot resolve. That import failure is the expected RED.
+ */
+import { describe, it, expect } from "vitest";
+import { withTestDb } from "./db";
+import { runMigrations } from "../src/migrate/runner";
+
+describe("runMigrations", () => {
+  it("applies the initial migrations and records them in schema_migrations", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const rows =
+        await db.query`SELECT id, filename FROM schema_migrations ORDER BY id`;
+      expect(rows.length).toBe(2);
+      const r0 = rows[0];
+      // postgres.js returns BIGINT as string; coerce for the numeric assertion.
+      expect(Number(r0?.id)).toBe(1);
+      expect(r0?.filename).toBe("0001_schema_migrations.sql");
+      const r1 = rows[1];
+      expect(Number(r1?.id)).toBe(2);
+      expect(r1?.filename).toBe("0002_health.sql");
+    } finally {
+      await close();
+    }
+  });
+
+  it("makes the health table writable", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      await expect(
+        db.query`INSERT INTO health(checked_at) VALUES (now())`,
+      ).resolves.toBeDefined();
+      const count = await db.query`SELECT count(*)::int AS n FROM health`;
+      expect(count).toEqual([{ n: 1 }]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("is idempotent — re-running applies nothing and does not throw", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      await runMigrations(db);
+      const count =
+        await db.query`SELECT count(*)::int AS n FROM schema_migrations`;
+      expect(count).toEqual([{ n: 2 }]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("throws when an applied migration id exceeds the max id on disk (FR-8 out-of-order guard)", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      // Simulate a stale database that has a higher applied id than any file
+      // currently shipped on disk; the runner must refuse to proceed.
+      await db.query`INSERT INTO schema_migrations(id, filename) VALUES (999, '0999_imaginary.sql')`;
+      await expect(runMigrations(db)).rejects.toThrow();
+    } finally {
+      await close();
+    }
+  });
+});

@@ -1,5 +1,11 @@
 import type { JSX } from "solid-js";
-import { createEffect, createResource, createSignal, For, Show } from "solid-js";
+import {
+  createEffect,
+  createResource,
+  createSignal,
+  For,
+  Show,
+} from "solid-js";
 import { Portal } from "solid-js/web";
 import type { Provider } from "@pigeon/shared";
 import { ApiError, mailboxes, oauth } from "../lib/api";
@@ -35,7 +41,9 @@ export default function AddInboxDialog(props: {
   });
 
   // OAuth buttons appear only when the server has credentials configured.
-  const [oauthProviders] = createResource(() => oauth.providers().catch(() => []));
+  const [oauthProviders] = createResource(() =>
+    oauth.providers().catch(() => []),
+  );
 
   // (Re)initialise whenever the dialog opens.
   createEffect(() => {
@@ -80,7 +88,8 @@ export default function AddInboxDialog(props: {
   function pickProtocol(next: "imap" | "pop3") {
     if (next === protocol()) return;
     const cfg = providerConfig(provider());
-    const defaults = next === "pop3" ? cfg.pop3 : { host: cfg.host, port: cfg.port };
+    const defaults =
+      next === "pop3" ? cfg.pop3 : { host: cfg.host, port: cfg.port };
     if (!defaults) return; // provider has no POP3
     setProtocol(next);
     setForm({ ...form(), host: defaults.host, port: defaults.port });
@@ -108,7 +117,9 @@ export default function AddInboxDialog(props: {
       props.onClose();
     } catch (err) {
       setError(
-        err instanceof ApiError ? err.message : "Could not reach the Pigeon API.",
+        err instanceof ApiError
+          ? err.message
+          : "Could not reach the Pigeon API.",
       );
     } finally {
       setBusy(false);
@@ -118,7 +129,7 @@ export default function AddInboxDialog(props: {
   return (
     <Show when={props.open}>
       <Portal>
-        <div class="modal-overlay" onClick={props.onClose}>
+        <div class="modal-overlay" onClick={() => props.onClose()}>
           <div
             class="modal rise"
             role="dialog"
@@ -128,9 +139,7 @@ export default function AddInboxDialog(props: {
           >
             <div class="modal-head">
               <div>
-                <div class="modal-eyebrow">
-                  Step {step()} of 2
-                </div>
+                <div class="modal-eyebrow">Step {step()} of 2</div>
                 <h2 class="modal-title">
                   <Show
                     when={step() === 1}
@@ -143,7 +152,7 @@ export default function AddInboxDialog(props: {
               <button
                 class="icon-btn"
                 aria-label="Close"
-                onClick={props.onClose}
+                onClick={() => props.onClose()}
               >
                 <CloseIcon />
               </button>
@@ -180,7 +189,11 @@ export default function AddInboxDialog(props: {
                 </p>
                 <For each={oauthProviders()}>
                   {(p) => (
-                    <a class="btn" style={{ width: "100%", "margin-top": "6px" }} href={oauth.startUrl(p.id)}>
+                    <a
+                      class="btn"
+                      style={{ width: "100%", "margin-top": "6px" }}
+                      href={oauth.startUrl(p.id)}
+                    >
                       Continue with {p.displayName}
                     </a>
                   )}
@@ -191,7 +204,9 @@ export default function AddInboxDialog(props: {
             {/* Step 2 — credential form */}
             <Show when={step() === 2}>
               <form class="modal-form" onSubmit={submit}>
-                <p class="hint provider-note">{providerConfig(provider()).note}</p>
+                <p class="hint provider-note">
+                  {providerConfig(provider()).note}
+                </p>
 
                 <Show when={provider() !== "mock"}>
                   <div class="field">
@@ -271,7 +286,11 @@ export default function AddInboxDialog(props: {
                       </label>
                       <input
                         class="input webhook-input"
-                        placeholder={protocol() === "pop3" ? "pop.example.com" : "imap.example.com"}
+                        placeholder={
+                          protocol() === "pop3"
+                            ? "pop.example.com"
+                            : "imap.example.com"
+                        }
                         value={form().host}
                         onInput={(e) =>
                           setForm({ ...form(), host: e.currentTarget.value })

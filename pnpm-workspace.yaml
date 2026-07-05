@@ -13,3 +13,13 @@ minimumReleaseAge: 1440
 # genuine critical hotfix, e.g.:
 # minimumReleaseAgeExclude:
 #   - some-package@1.2.3
+
+# --- Build script approval ---------------------------------------------------
+# pnpm 10 blocks dependency postinstall scripts by default. `embedded-postgres`
+# ships platform-specific binary packages whose build script generates the
+# symlinks Postgres needs at runtime — without it the test harness cannot boot.
+# Approve the platform packages we actually run on: windows-x64 (dev), linux-x64
+# (CI). Other platform deps are optional and won't install here.
+onlyBuiltDependencies:
+  - "@embedded-postgres/windows-x64"
+  - "@embedded-postgres/linux-x64"

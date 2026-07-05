@@ -1,0 +1,39 @@
+# Keep the Docker build context lean and — critically — keep the host's
+# node_modules out of the image. The Dockerfile runs `pnpm install`
+# inside the container to lay down Linux-native deps; a bare `COPY backend
+# ./backend` would otherwise overwrite them with the host's (Windows) pnpm
+# symlinks pointing at absolute host paths, so `tsx`/etc. become unresolvable.
+# Exclude anything that isn't needed to RUN the backend in the container.
+
+# Dependencies + build output (recreated in-image or not needed at runtime).
+**/node_modules/
+**/dist/
+**/.astro/
+**/.output/
+**/build/
+
+# Git + docs + design artifacts (not needed in the runtime image).
+.git/
+.gitignore
+.github/
+vibes/
+docs/
+deploy/
+*.md
+
+# Local env (compose injects env at runtime; never bake secrets into an image).
+.env
+.env.*
+!.env.example
+
+# Editor / OS cruft.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local embedded-postgres data + logs (dev-only).
+.pgdata/
+*.log
+npm-debug.log*
+pnpm-debug.log*

@@ -14,6 +14,7 @@ RUN pnpm install --frozen-lockfile --filter @pigeon/backend...
 COPY tsconfig.base.json ./
 COPY shared ./shared
 COPY backend ./backend
+COPY db ./db
 
 WORKDIR /app/backend
 EXPOSE 8788

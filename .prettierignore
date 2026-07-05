@@ -3,3 +3,6 @@ dist
 .astro
 pnpm-lock.yaml
 .pgdata
+
+# .env files have no Prettier parser; the example ships hand-formatted.
+.env*

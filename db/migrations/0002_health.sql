@@ -1,0 +1,3 @@
+CREATE TABLE IF NOT EXISTS health (
+  checked_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

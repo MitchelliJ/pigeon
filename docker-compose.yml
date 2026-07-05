@@ -2,9 +2,8 @@
 # Local:      cp .env.example .env  &&  docker compose up --build
 # Production: same file on the Hetzner host; see deploy/hetzner.md.
 #
-# NOTE: written before a live Docker daemon was available — validate with
-# `docker compose config` before first use. The `migrate` step is re-added
-# in feature 1 (infrastructure baseline) once migrations exist.
+# Migrations run once as a one-shot `migrate` service before `server` and
+# `worker` start (both block on `service_completed_successfully`).
 
 name: pigeon
 
@@ -26,14 +25,12 @@ services:
       timeout: 5s
       retries: 12
 
-  server:
+  migrate:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    command: ["pnpm", "start"]
-    restart: unless-stopped
-    ports:
-      - "8788:8788"
+    command: ["pnpm", "migrate"]
+    restart: "no"
     environment: &appenv
       NODE_ENV: production
       DATABASE_URL: postgres://pigeon:${POSTGRES_PASSWORD:-pigeon}@db:5432/pigeon
@@ -43,6 +40,21 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  server:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["pnpm", "start"]
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    environment: *appenv
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build:
@@ -54,6 +66,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:

@@ -1,5 +1,5 @@
 import type { JSX } from "solid-js";
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, For, Show, untrack } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { Weekday } from "@pigeon/shared";
 import { WEEKDAYS } from "@pigeon/shared";
@@ -13,8 +13,10 @@ export default function EditScheduleDialog(props: {
   onClose: () => void;
   onSave: (time: string, days: Weekday[]) => void;
 }): JSX.Element {
-  const [time, setTime] = createSignal(props.time);
-  const [days, setDays] = createSignal<Set<Weekday>>(new Set(props.days));
+  const [time, setTime] = createSignal(untrack(() => props.time));
+  const [days, setDays] = createSignal<Set<Weekday>>(
+    untrack(() => new Set(props.days)),
+  );
 
   createEffect(() => {
     if (props.open) {
@@ -26,7 +28,11 @@ export default function EditScheduleDialog(props: {
   function toggle(day: Weekday) {
     setDays((prev) => {
       const next = new Set(prev);
-      next.has(day) ? next.delete(day) : next.add(day);
+      if (next.has(day)) {
+        next.delete(day);
+      } else {
+        next.add(day);
+      }
       return next;
     });
   }
@@ -40,7 +46,7 @@ export default function EditScheduleDialog(props: {
   return (
     <Show when={props.open}>
       <Portal>
-        <div class="modal-overlay" onClick={props.onClose}>
+        <div class="modal-overlay" onClick={() => props.onClose()}>
           <div
             class="modal modal-sm rise"
             role="dialog"
@@ -56,7 +62,7 @@ export default function EditScheduleDialog(props: {
               <button
                 class="icon-btn"
                 aria-label="Close"
-                onClick={props.onClose}
+                onClick={() => props.onClose()}
               >
                 <CloseIcon />
               </button>
@@ -95,7 +101,7 @@ export default function EditScheduleDialog(props: {
             </div>
 
             <div class="modal-actions">
-              <button class="btn" onClick={props.onClose}>
+              <button class="btn" onClick={() => props.onClose()}>
                 Cancel
               </button>
               <button

@@ -16,6 +16,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "migrate": "pnpm --filter @pigeon/backend migrate",
     "test": "vitest run",
     "check": "pnpm lint && pnpm typecheck",
     "check:all": "pnpm lint && pnpm typecheck && pnpm test",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@eslint/js": "^9.17.0",
     "eslint": "^9.17.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-astro": "^1.3.1",
