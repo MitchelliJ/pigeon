@@ -26,6 +26,8 @@ const devConfig: Config = {
   LOG_LEVEL: "info",
   WORKER_HEARTBEAT_INTERVAL_MS: 30000,
   HOST: "0.0.0.0",
+  VAULT_MASTER_KEY: "J371VUEASEUQsYjxvMKhAklLcZOslC7QAGV9/NWQTbY=",
+  MAILBOX_CONNECT_TIMEOUT_MS: 10000,
 };
 
 const prodConfig: Config = {

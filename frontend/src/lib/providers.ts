@@ -60,14 +60,6 @@ export const PROVIDERS: ProviderConfig[] = [
     pop3: { host: "", port: 995 },
     note: "Enter the host and port from your email provider's documentation.",
   },
-  {
-    id: "mock",
-    name: "Demo inbox",
-    host: "mock",
-    port: 1,
-    pop3: null,
-    note: "A built-in demo mailbox: it receives sample emails so you can watch the whole pipeline work without real credentials. Any password works.",
-  },
 ];
 
 export function providerConfig(id: Provider): ProviderConfig {

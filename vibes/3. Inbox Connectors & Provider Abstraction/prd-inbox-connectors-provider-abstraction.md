@@ -147,13 +147,24 @@ reason: string }>`. Never throws for expected failure modes (bad
   - `pop3.ts`: opens a TLS socket, sends `USER <username>` (expects `+OK`),
     then `PASS <password>` (expects `+OK`), then `QUIT`. A `-ERR` on either
     step → `{ ok: false, reason: "authentication failed" }`.
-  - Both apply a **10-second connect+auth timeout**; a timeout or any socket
-    error (ECONNREFUSED, ENOTFOUND, TLS handshake failure) resolves to
-    `{ ok: false, reason: "could not reach <host>:<port>" }` (message doesn't
-    leak stack traces or raw protocol text to the client).
+  - Both apply a single **connect+auth timeout** — one clock covering DNS +
+    TCP/TLS connect _and_ the login round-trip, configurable via
+    `MAILBOX_CONNECT_TIMEOUT_MS` (§3.4), **defaulting to 10000ms** when unset.
+    A timeout or any socket error (ECONNREFUSED, ENOTFOUND, TLS handshake
+    failure) resolves to `{ ok: false, reason: "could not reach
+<host>:<port>" }` (message doesn't leak stack traces or raw protocol text to
+    the client).
   - **Strict TLS validation** — no `rejectUnauthorized: false` in the public
     code path. A self-signed/expired/mismatched certificate is a connection
-    failure like any other. (Test-only override, §3.5.)
+    failure like any other **and is additionally logged** (`console.error` or
+    the equivalent structured log, is fine — no dedicated logging library):
+    when the TLS handshake fails specifically on certificate validation
+    (Node's `tls` socket emits an `error` with `code` such as
+    `UNABLE_TO_VERIFY_LEAF_SIGNATURE`/`CERT_HAS_EXPIRED`/`DEPTH_ZERO_SELF_SIGNED_CERT`/etc.),
+    log the host and that code distinctly from a generic connect failure —
+    this is the operator's only signal that a user's own mail server has a
+    cert problem, since the client only ever sees the generic
+    `connection_failed` reason. (Test-only override, §3.5.)
   - Only `'imap'`/`'pop3'` connectors exist today; the module exports a
     `getConnector(protocol)` lookup so Feature 11 adds
     `'gmail-oauth'`/`'microsoft-oauth'` entries without touching callers.
@@ -248,23 +259,28 @@ lastSent: "Never" }` — **placeholder, owned by Feature 7.**
 - **FR-16.** `.env.example` gains `VAULT_MASTER_KEY` (commented, with the
   existing `.env.old` generation snippet: `node -e
 "console.log(require('crypto').randomBytes(32).toString('base64'))"`).
+- **FR-17.** `MAILBOX_CONNECT_TIMEOUT_MS`: optional, `z.coerce.number().int().positive()`,
+  **default `10000`** when unset (§3.2.2). Not required in any environment —
+  this is a tuning knob, not a secret. `.env.example` documents it (commented,
+  showing the default).
 
 ### 3.5 Tests (`backend/src/mailboxes/test/`, `backend/src/vault/test/`)
 
-- **FR-17.** `vault`: seal/open round-trips the original plaintext; a
+- **FR-18.** `vault`: seal/open round-trips the original plaintext; a
   flipped byte in the ciphertext or auth tag fails to open; opening with a
   different key fails; `seal` output never appears verbatim in `open`'s
   input parsing errors (no plaintext leakage in error messages).
-- **FR-18.** Connectors: integration tests spin up **real local fake
+- **FR-19.** Connectors: integration tests spin up **real local fake
   IMAP/POP3 servers** (`node:tls`/`node:net`, a committed self-signed test
   certificate) implementing just enough protocol to accept a correct
   login and reject a wrong one. Connector functions accept the target
   host/port and (test-only, not part of the public request shape) a TLS
   options override so tests can trust the fixture's self-signed cert
   without weakening the production code path. Cover: successful login,
-  wrong password, connection refused (nothing listening), and a timeout
-  (a socket that never responds).
-- **FR-19.** Routes: boot the embedded-Postgres harness, apply migrations.
+  wrong password, connection refused (nothing listening), a timeout (a
+  socket that never responds), and a certificate-validation failure logging
+  the distinct TLS error code (FR-5).
+- **FR-20.** Routes: boot the embedded-Postgres harness, apply migrations.
   Tests inject a fake connector (success/failure) to avoid real network.
   Cover: create with a passing test → `201`, row persisted with
   `password_ciphertext` set (assert it's not the plaintext password and
@@ -355,15 +371,7 @@ connection_failed` and **persists nothing** — verified by an integration
   selectable? Leaning **login-only is enough** — folder access is
   meaningfully Feature 4's concern (it needs to enumerate/select folders
   anyway to sync), and testing more here risks duplicating that work.
-- **OQ2.** Connect+auth timeout is proposed at a flat **10 seconds**. Fine as
-  a hardcoded constant, or should it be a config value from day one (even
-  though nothing else makes it configurable yet)?
-- **OQ3.** TLS validation is strict (no self-signed/expired cert
-  acceptance) — some self-hosted IMAP servers use self-signed certs. Confirm
-  strict-by-default is acceptable for now (a support request for "my server
-  uses a self-signed cert" would need a deliberate, explicit opt-in later,
-  not a silent relaxation).
-- **OQ4.** `UNIQUE (user_id, address)` blocks reconnecting the exact same
+- **OQ2.** `UNIQUE (user_id, address)` blocks reconnecting the exact same
   address twice under different labels (e.g. splitting one inbox into two
   differently-filtered entries — not actually possible today since there's
   no per-mailbox filtering, but worth confirming this restriction is

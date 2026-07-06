@@ -4,12 +4,13 @@
  * Validates environment variables with Zod at startup so the process
  * crashes immediately — naming the offending variable — when something
  * is missing or malformed. Secrets are never echoed by describeConfig:
- * it only reports whether DATABASE_URL, MAIL_FROM, and RESEND_API_KEY
- * are set. APP_BASE_URL is reported as host-only and SIGNUP_OPEN as a
- * boolean label.
+ * it only reports whether DATABASE_URL, MAIL_FROM, RESEND_API_KEY, and
+ * VAULT_MASTER_KEY are set. APP_BASE_URL is reported as host-only and
+ * SIGNUP_OPEN as a boolean label.
  */
 
 import { z } from "zod";
+import { decodeMasterKey } from "../vault/index";
 
 const DEV_DATABASE_URL = "postgres://pigeon:pigeon@localhost:5432/pigeon";
 
@@ -44,6 +45,21 @@ const configSchema = z
       .positive()
       .default(30000),
     HOST: z.string().default("0.0.0.0"),
+    // Base64-encoded 32-byte AES-256 key used by the vault module to seal
+    // provider credentials at rest (PRD "Inbox Connectors & Provider
+    // Abstraction" §3.4, FR-15). Required in every environment — unlike
+    // APP_BASE_URL/MAIL_FROM/RESEND_API_KEY, a missing or malformed key
+    // must never be tolerated even in dev, since it would silently break
+    // vault.seal/open. Left optional here so the presence/format/length
+    // checks can all be reported as one clear VAULT_MASTER_KEY issue in
+    // .superRefine below, instead of Zod's generic "Required" error.
+    VAULT_MASTER_KEY: z.string().optional(),
+    // Timeout for opening a connection to a mailbox provider (FR-16/FR-17).
+    MAILBOX_CONNECT_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(10000),
   })
   .superRefine((data, ctx) => {
     const requiresDatabaseUrl =
@@ -71,6 +87,28 @@ const configSchema = z
     requireInProd("APP_BASE_URL", data.APP_BASE_URL);
     requireInProd("MAIL_FROM", data.MAIL_FROM);
     requireInProd("RESEND_API_KEY", data.RESEND_API_KEY);
+
+    // VAULT_MASTER_KEY is required in every NODE_ENV (not just production):
+    // a missing/malformed key would silently break vault.seal/open the
+    // first time a secret needs sealing, so fail fast at startup instead.
+    if (!data.VAULT_MASTER_KEY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "VAULT_MASTER_KEY is required",
+        path: ["VAULT_MASTER_KEY"],
+      });
+    } else {
+      try {
+        decodeMasterKey(data.VAULT_MASTER_KEY);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `VAULT_MASTER_KEY is invalid: ${reason}`,
+          path: ["VAULT_MASTER_KEY"],
+        });
+      }
+    }
   });
 
 export type Config = {
@@ -84,6 +122,8 @@ export type Config = {
   LOG_LEVEL: "trace" | "debug" | "info" | "warn" | "error";
   WORKER_HEARTBEAT_INTERVAL_MS: number;
   HOST: string;
+  VAULT_MASTER_KEY: string;
+  MAILBOX_CONNECT_TIMEOUT_MS: number;
 };
 
 /**
@@ -112,6 +152,10 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     LOG_LEVEL: parsed.LOG_LEVEL,
     WORKER_HEARTBEAT_INTERVAL_MS: parsed.WORKER_HEARTBEAT_INTERVAL_MS,
     HOST: parsed.HOST,
+    // .superRefine above guarantees VAULT_MASTER_KEY is present and valid
+    // whenever parse succeeds, so it's safe to assert non-undefined here.
+    VAULT_MASTER_KEY: parsed.VAULT_MASTER_KEY as string,
+    MAILBOX_CONNECT_TIMEOUT_MS: parsed.MAILBOX_CONNECT_TIMEOUT_MS,
   };
 }
 
@@ -140,9 +184,10 @@ export function describeConfig(
       return "set";
     }
   })();
-  // MAIL_FROM and RESEND_API_KEY are secrets: presence only.
+  // MAIL_FROM, RESEND_API_KEY, and VAULT_MASTER_KEY are secrets: presence only.
   const mailFrom = p?.MAIL_FROM ?? env.MAIL_FROM;
   const resendApiKey = p?.RESEND_API_KEY ?? env.RESEND_API_KEY;
+  const vaultMasterKey = p?.VAULT_MASTER_KEY ?? env.VAULT_MASTER_KEY;
   // SIGNUP_OPEN: report as a label (not the raw env string).
   const signupOpen = (() => {
     const value = p?.SIGNUP_OPEN ?? env.SIGNUP_OPEN === "true";
@@ -159,5 +204,9 @@ export function describeConfig(
     SIGNUP_OPEN: signupOpen,
     LOG_LEVEL: pick("LOG_LEVEL"),
     HOST: pick("HOST"),
+    VAULT_MASTER_KEY: vaultMasterKey ? "set" : "not set",
+    MAILBOX_CONNECT_TIMEOUT_MS: p
+      ? String(p.MAILBOX_CONNECT_TIMEOUT_MS)
+      : (env.MAILBOX_CONNECT_TIMEOUT_MS ?? "not set"),
   };
 }

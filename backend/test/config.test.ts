@@ -2,9 +2,13 @@ import { describe, it, expect } from "vitest";
 import { parseConfig, describeConfig } from "../src/config/index";
 import type { Config } from "../src/config/index";
 
+// Fixed test-only base64 32-byte value — not a real secret, just a
+// deterministic valid-shape VAULT_MASTER_KEY for tests (FR-15).
+const TEST_VAULT_KEY = "J371VUEASEUQsYjxvMKhAklLcZOslC7QAGV9/NWQTbY=";
+
 describe("parseConfig", () => {
   it("returns documented defaults when env is empty (NODE_ENV defaults to development)", () => {
-    const cfg: Config = parseConfig({});
+    const cfg: Config = parseConfig({ VAULT_MASTER_KEY: TEST_VAULT_KEY });
 
     expect(cfg.NODE_ENV).toBe("development");
     expect(cfg.PORT).toBe(8788);
@@ -14,12 +18,17 @@ describe("parseConfig", () => {
     expect(cfg.DATABASE_URL).toBe(
       "postgres://pigeon:pigeon@localhost:5432/pigeon",
     );
+    expect(cfg.VAULT_MASTER_KEY).toBe(TEST_VAULT_KEY);
+    expect(cfg.MAILBOX_CONNECT_TIMEOUT_MS).toBe(10000);
   });
 
   it("throws a ZodError mentioning DATABASE_URL in production without DATABASE_URL", () => {
-    expect(() => parseConfig({ NODE_ENV: "production" })).toThrowError(
-      /DATABASE_URL/,
-    );
+    expect(() =>
+      parseConfig({
+        NODE_ENV: "production",
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      }),
+    ).toThrowError(/DATABASE_URL/);
   });
 
   it("succeeds in production when DATABASE_URL + the new required keys are provided and echoes the values", () => {
@@ -29,6 +38,7 @@ describe("parseConfig", () => {
       APP_BASE_URL: "https://app.pigeon.email",
       MAIL_FROM: "Pigeon <noreply@pigeon.email>",
       RESEND_API_KEY: "re_xxx",
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
     });
 
     expect(cfg.NODE_ENV).toBe("production");
@@ -37,14 +47,22 @@ describe("parseConfig", () => {
     expect(cfg.MAIL_FROM).toBe("Pigeon <noreply@pigeon.email>");
     expect(cfg.RESEND_API_KEY).toBe("re_xxx");
     expect(cfg.SIGNUP_OPEN).toBe(false);
+    expect(cfg.VAULT_MASTER_KEY).toBe(TEST_VAULT_KEY);
   });
 
   it("throws a ZodError mentioning LOG_LEVEL when LOG_LEVEL is invalid", () => {
-    expect(() => parseConfig({ LOG_LEVEL: "bogus" })).toThrowError(/LOG_LEVEL/);
+    expect(() =>
+      parseConfig({ LOG_LEVEL: "bogus", VAULT_MASTER_KEY: TEST_VAULT_KEY }),
+    ).toThrowError(/LOG_LEVEL/);
   });
 
   it("throws a ZodError mentioning PORT when PORT is not a number", () => {
-    expect(() => parseConfig({ PORT: "not-a-number" })).toThrowError(/PORT/);
+    expect(() =>
+      parseConfig({
+        PORT: "not-a-number",
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      }),
+    ).toThrowError(/PORT/);
   });
 });
 
@@ -81,6 +99,7 @@ describe("parseConfig — FR-30/FR-31 new keys", () => {
         DATABASE_URL: "postgres://u:p@h:5432/d",
         MAIL_FROM: "x@y.z",
         RESEND_API_KEY: "re_xxx",
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
       }),
     ).toThrowError(/APP_BASE_URL/);
   });
@@ -92,6 +111,7 @@ describe("parseConfig — FR-30/FR-31 new keys", () => {
         DATABASE_URL: "postgres://u:p@h:5432/d",
         APP_BASE_URL: "https://app.pigeon.email",
         RESEND_API_KEY: "re_xxx",
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
       }),
     ).toThrowError(/MAIL_FROM/);
   });
@@ -103,12 +123,13 @@ describe("parseConfig — FR-30/FR-31 new keys", () => {
         DATABASE_URL: "postgres://u:p@h:5432/d",
         APP_BASE_URL: "https://app.pigeon.email",
         MAIL_FROM: "x@y.z",
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
       }),
     ).toThrowError(/RESEND_API_KEY/);
   });
 
   it("parses with SIGNUP_OPEN defaulting to false in development with empty env", () => {
-    const cfg = parseConfig({});
+    const cfg = parseConfig({ VAULT_MASTER_KEY: TEST_VAULT_KEY });
 
     expect(cfg.SIGNUP_OPEN).toBe(false);
     // RESEND_API_KEY is optional in development and should be absent here.
@@ -116,7 +137,10 @@ describe("parseConfig — FR-30/FR-31 new keys", () => {
   });
 
   it("parses SIGNUP_OPEN=true and exposes the new dev-optional keys", () => {
-    const cfg = parseConfig({ SIGNUP_OPEN: "true" });
+    const cfg = parseConfig({
+      SIGNUP_OPEN: "true",
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
+    });
 
     expect(cfg.SIGNUP_OPEN).toBe(true);
     // APP_BASE_URL has a sensible dev default; MAIL_FROM is optional in dev.
@@ -125,9 +149,12 @@ describe("parseConfig — FR-30/FR-31 new keys", () => {
   });
 
   it("throws a ZodError mentioning APP_BASE_URL when APP_BASE_URL is not a valid URL", () => {
-    expect(() => parseConfig({ APP_BASE_URL: "not-a-url" })).toThrowError(
-      /APP_BASE_URL/,
-    );
+    expect(() =>
+      parseConfig({
+        APP_BASE_URL: "not-a-url",
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      }),
+    ).toThrowError(/APP_BASE_URL/);
   });
 
   it("succeeds in production with all required new keys present and echoes them", () => {
@@ -137,6 +164,7 @@ describe("parseConfig — FR-30/FR-31 new keys", () => {
       APP_BASE_URL: "https://app.pigeon.email",
       MAIL_FROM: "Pigeon <noreply@pigeon.email>",
       RESEND_API_KEY: "re_xxx",
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
     });
 
     expect(cfg.APP_BASE_URL).toBe("https://app.pigeon.email");
@@ -162,5 +190,46 @@ describe("describeConfig — FR-30 redaction", () => {
     expect(summary.SIGNUP_OPEN).not.toBe("true");
     // APP_BASE_URL is reported (host is fine) without leaking the secret.
     expect(summary).toHaveProperty("APP_BASE_URL");
+  });
+});
+
+describe("parseConfig — VAULT_MASTER_KEY / MAILBOX_CONNECT_TIMEOUT_MS (FR-15..FR-17)", () => {
+  it("throws a ZodError mentioning VAULT_MASTER_KEY in development when it is entirely absent", () => {
+    // No NODE_ENV given -> defaults to development. VAULT_MASTER_KEY must
+    // still be required, proving it's not gated behind the production-only
+    // requireInProd pattern used by APP_BASE_URL/MAIL_FROM/RESEND_API_KEY.
+    expect(() => parseConfig({})).toThrowError(/VAULT_MASTER_KEY/);
+  });
+
+  it("throws a ZodError mentioning VAULT_MASTER_KEY when it is not valid base64", () => {
+    expect(() =>
+      parseConfig({ VAULT_MASTER_KEY: "not-valid-base64!!!" }),
+    ).toThrowError(/VAULT_MASTER_KEY/);
+  });
+
+  it("throws a ZodError mentioning VAULT_MASTER_KEY when the decoded key is not exactly 32 bytes", () => {
+    expect(() =>
+      parseConfig({
+        VAULT_MASTER_KEY: Buffer.from("too short").toString("base64"),
+      }),
+    ).toThrowError(/VAULT_MASTER_KEY/);
+  });
+
+  it("coerces MAILBOX_CONNECT_TIMEOUT_MS to a number when provided", () => {
+    const cfg = parseConfig({
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      MAILBOX_CONNECT_TIMEOUT_MS: "5000",
+    });
+
+    expect(cfg.MAILBOX_CONNECT_TIMEOUT_MS).toBe(5000);
+  });
+
+  it("throws a ZodError mentioning MAILBOX_CONNECT_TIMEOUT_MS when it is not a number", () => {
+    expect(() =>
+      parseConfig({
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
+        MAILBOX_CONNECT_TIMEOUT_MS: "not-a-number",
+      }),
+    ).toThrowError(/MAILBOX_CONNECT_TIMEOUT_MS/);
   });
 });

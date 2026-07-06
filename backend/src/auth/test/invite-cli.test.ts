@@ -138,7 +138,9 @@ async function withCliEnv<T>(
 ): Promise<T> {
   const originalUrl = process.env.DATABASE_URL;
   const originalNodeEnv = process.env.NODE_ENV;
+  const originalVaultKey = process.env.VAULT_MASTER_KEY;
   process.env.NODE_ENV = "test";
+  process.env.VAULT_MASTER_KEY = "J371VUEASEUQsYjxvMKhAklLcZOslC7QAGV9/NWQTbY=";
   process.env.DATABASE_URL = connectionString;
   try {
     return await fn();
@@ -147,6 +149,8 @@ async function withCliEnv<T>(
     else process.env.DATABASE_URL = originalUrl;
     if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = originalNodeEnv;
+    if (originalVaultKey === undefined) delete process.env.VAULT_MASTER_KEY;
+    else process.env.VAULT_MASTER_KEY = originalVaultKey;
   }
 }
 

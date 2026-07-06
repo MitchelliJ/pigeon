@@ -104,12 +104,12 @@ export default function AddInboxDialog(props: {
     try {
       await mailboxes.create({
         provider: provider(),
-        protocol: provider() === "mock" ? "mock" : protocol(),
+        protocol: protocol(),
         label: f.label || "New inbox",
         address: f.address,
-        host: f.host || "mock",
+        host: f.host,
         port: f.port,
-        tls: provider() !== "mock",
+        tls: true,
         username: f.address,
         password: f.password,
       });
@@ -208,37 +208,35 @@ export default function AddInboxDialog(props: {
                   {providerConfig(provider()).note}
                 </p>
 
-                <Show when={provider() !== "mock"}>
-                  <div class="field">
-                    <label class="field-label">Protocol</label>
-                    <div class="field-pair">
-                      <button
-                        type="button"
-                        class="btn"
-                        classList={{ "btn-primary": protocol() === "imap" }}
-                        style={{ flex: 1 }}
-                        onClick={() => pickProtocol("imap")}
-                      >
-                        IMAP (recommended)
-                      </button>
-                      <button
-                        type="button"
-                        class="btn"
-                        classList={{ "btn-primary": protocol() === "pop3" }}
-                        style={{ flex: 1 }}
-                        disabled={providerConfig(provider()).pop3 === null}
-                        title={
-                          providerConfig(provider()).pop3 === null
-                            ? `${providerConfig(provider()).name} does not offer POP3`
-                            : ""
-                        }
-                        onClick={() => pickProtocol("pop3")}
-                      >
-                        POP3
-                      </button>
-                    </div>
+                <div class="field">
+                  <label class="field-label">Protocol</label>
+                  <div class="field-pair">
+                    <button
+                      type="button"
+                      class="btn"
+                      classList={{ "btn-primary": protocol() === "imap" }}
+                      style={{ flex: 1 }}
+                      onClick={() => pickProtocol("imap")}
+                    >
+                      IMAP (recommended)
+                    </button>
+                    <button
+                      type="button"
+                      class="btn"
+                      classList={{ "btn-primary": protocol() === "pop3" }}
+                      style={{ flex: 1 }}
+                      disabled={providerConfig(provider()).pop3 === null}
+                      title={
+                        providerConfig(provider()).pop3 === null
+                          ? `${providerConfig(provider()).name} does not offer POP3`
+                          : ""
+                      }
+                      onClick={() => pickProtocol("pop3")}
+                    >
+                      POP3
+                    </button>
                   </div>
-                </Show>
+                </div>
 
                 <div class="field">
                   <label class="field-label">Label</label>
@@ -278,41 +276,39 @@ export default function AddInboxDialog(props: {
                   />
                 </div>
 
-                <Show when={provider() !== "mock"}>
-                  <div class="field-pair">
-                    <div class="field" style={{ flex: "2" }}>
-                      <label class="field-label">
-                        {protocol() === "pop3" ? "POP3 server" : "IMAP server"}
-                      </label>
-                      <input
-                        class="input webhook-input"
-                        placeholder={
-                          protocol() === "pop3"
-                            ? "pop.example.com"
-                            : "imap.example.com"
-                        }
-                        value={form().host}
-                        onInput={(e) =>
-                          setForm({ ...form(), host: e.currentTarget.value })
-                        }
-                      />
-                    </div>
-                    <div class="field" style={{ flex: "1" }}>
-                      <label class="field-label">Port</label>
-                      <input
-                        class="input webhook-input"
-                        type="number"
-                        value={form().port}
-                        onInput={(e) =>
-                          setForm({
-                            ...form(),
-                            port: Number(e.currentTarget.value),
-                          })
-                        }
-                      />
-                    </div>
+                <div class="field-pair">
+                  <div class="field" style={{ flex: "2" }}>
+                    <label class="field-label">
+                      {protocol() === "pop3" ? "POP3 server" : "IMAP server"}
+                    </label>
+                    <input
+                      class="input webhook-input"
+                      placeholder={
+                        protocol() === "pop3"
+                          ? "pop.example.com"
+                          : "imap.example.com"
+                      }
+                      value={form().host}
+                      onInput={(e) =>
+                        setForm({ ...form(), host: e.currentTarget.value })
+                      }
+                    />
                   </div>
-                </Show>
+                  <div class="field" style={{ flex: "1" }}>
+                    <label class="field-label">Port</label>
+                    <input
+                      class="input webhook-input"
+                      type="number"
+                      value={form().port}
+                      onInput={(e) =>
+                        setForm({
+                          ...form(),
+                          port: Number(e.currentTarget.value),
+                        })
+                      }
+                    />
+                  </div>
+                </div>
 
                 <Show when={error()}>
                   <p class="auth-error">{error()}</p>

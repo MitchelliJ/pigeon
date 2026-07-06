@@ -19,7 +19,10 @@ describe("migrate CLI main()", () => {
   it("returns 0 on success and applies migrations to the database", async () => {
     const originalUrl = process.env.DATABASE_URL;
     const originalNodeEnv = process.env.NODE_ENV;
+    const originalVaultKey = process.env.VAULT_MASTER_KEY;
     process.env.NODE_ENV = "test";
+    process.env.VAULT_MASTER_KEY =
+      "J371VUEASEUQsYjxvMKhAklLcZOslC7QAGV9/NWQTbY=";
     const { connectionString, close } = await withTestDb();
     process.env.DATABASE_URL = connectionString;
     try {
@@ -32,7 +35,7 @@ describe("migrate CLI main()", () => {
       try {
         const rows =
           await verify.query`SELECT count(*)::int AS n FROM schema_migrations`;
-        expect(rows[0]?.n).toBe(3);
+        expect(rows[0]?.n).toBe(4);
       } finally {
         await verify.close();
       }
@@ -42,13 +45,18 @@ describe("migrate CLI main()", () => {
       else process.env.DATABASE_URL = originalUrl;
       if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = originalNodeEnv;
+      if (originalVaultKey === undefined) delete process.env.VAULT_MASTER_KEY;
+      else process.env.VAULT_MASTER_KEY = originalVaultKey;
     }
   });
 
   it("returns non-zero when DATABASE_URL is unreachable", async () => {
     const originalUrl = process.env.DATABASE_URL;
     const originalNodeEnv = process.env.NODE_ENV;
+    const originalVaultKey = process.env.VAULT_MASTER_KEY;
     process.env.NODE_ENV = "test";
+    process.env.VAULT_MASTER_KEY =
+      "J371VUEASEUQsYjxvMKhAklLcZOslC7QAGV9/NWQTbY=";
     // Port 1 is reserved/unroutable → the connection rejects with ECONNREFUSED,
     // which `main` must catch and surface as a non-zero exit code.
     process.env.DATABASE_URL = "postgres://nobody:nopw@127.0.0.1:1/nope";
@@ -60,6 +68,8 @@ describe("migrate CLI main()", () => {
       else process.env.DATABASE_URL = originalUrl;
       if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = originalNodeEnv;
+      if (originalVaultKey === undefined) delete process.env.VAULT_MASTER_KEY;
+      else process.env.VAULT_MASTER_KEY = originalVaultKey;
     }
   });
 });
