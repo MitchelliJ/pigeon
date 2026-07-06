@@ -9,8 +9,11 @@ import type { Db } from "../db/index";
 import type { Vault } from "../vault/index";
 import type { MailboxConnector } from "../mailboxes/connectors/types";
 import { getConnector } from "../mailboxes/connectors/index";
+import { mockLlmClassifier } from "../llm/index";
+import type { LlmClassifier } from "../llm/index";
 import { claimJobs, completeJob, failJob } from "./store";
 import { handleSyncMailboxJob } from "./handlers/sync-mailbox";
+import { handleSummarizeClassifyJob } from "./handlers/summarize-classify";
 import type { Job } from "./types";
 
 /** Run a single worker tick: claim, dispatch, and settle up to `concurrency` jobs. */
@@ -21,6 +24,7 @@ export async function runWorkerTick(
   getConnectorFn: (
     protocol: "imap" | "pop3",
   ) => MailboxConnector = getConnector,
+  classifier: LlmClassifier = mockLlmClassifier,
 ): Promise<void> {
   const jobs = await claimJobs(db, concurrency);
 
@@ -32,6 +36,12 @@ export async function runWorkerTick(
           vault,
           job.payload as { mailboxId: string },
           getConnectorFn,
+        );
+      case "summarize_classify":
+        return handleSummarizeClassifyJob(
+          db,
+          job.payload as { emailId: string },
+          () => classifier,
         );
       default: {
         // JobType is a closed set — any addition here must add a matching

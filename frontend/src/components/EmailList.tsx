@@ -1,22 +1,83 @@
 import type { JSX } from "solid-js";
-import { createMemo, createSignal, For } from "solid-js";
+import {
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  onCleanup,
+  onMount,
+  Switch,
+  untrack,
+} from "solid-js";
+import { createStore } from "solid-js/store";
 import type { Email, EmailAccount } from "@pigeon/shared";
-import { PRIORITY_ORDER } from "@pigeon/shared";
+import { CATEGORY_ORDER } from "@pigeon/shared";
+import { fetchEmails } from "../lib/api";
 import EmailRow from "./EmailRow";
 
-type Filter = "urgent" | "important" | "everything";
+type Filter = "requires_action" | "important" | "noise";
 
 const FILTERS: { key: Filter; label: string }[] = [
-  { key: "urgent", label: "Urgent" },
+  { key: "requires_action", label: "Requires action" },
   { key: "important", label: "Important" },
-  { key: "everything", label: "Everything else" },
+  { key: "noise", label: "Noise" },
 ];
+
+/** Rows per page — matches the backend's default `limit` (FR-13/FR-18). */
+const PAGE_SIZE = 10;
+
+/**
+ * What we track for each category tab so infinite scroll can page through it
+ * independently:
+ * - `emails`      — the rows loaded so far, oldest fetch first.
+ * - `nextCursor`  — opaque cursor for the next page, or `null` when exhausted.
+ * - `initialized` — has this category done its own real fetch yet? Until it
+ *   has, we don't know its true `nextCursor`, so the first scroll fetches
+ *   page 1 fresh to learn it.
+ * - `loading`     — a fetch is in flight; guards against duplicate concurrent
+ *   fetches for the same category.
+ */
+interface CategoryState {
+  emails: Email[];
+  nextCursor: string | null;
+  initialized: boolean;
+  loading: boolean;
+}
+
+/** A category that hasn't been opened yet. */
+function emptyState(): CategoryState {
+  return { emails: [], nextCursor: null, initialized: false, loading: false };
+}
 
 export default function EmailList(props: {
   emails: Email[];
   accounts: EmailAccount[];
 }): JSX.Element {
-  const [filter, setFilter] = createSignal<Filter>("urgent");
+  const [filter, setFilter] = createSignal<Filter>("requires_action");
+
+  // Per-category cache for the component's lifetime (no cross-reload persistence
+  // needed). `requires_action` is the default tab and its first page already
+  // arrived in `props.emails` (FR-12), so we seed it and never fetch on initial
+  // load (FR-18). If the dashboard returned a full page there may be more, so we
+  // leave it uninitialized — the first scroll-to-bottom does one fresh fetch to
+  // learn the real cursor. A short page means it's already exhausted, so we mark
+  // it initialized and never fetch.
+  // One-time snapshot of the first page taken at setup. `untrack` makes the
+  // untracked read explicit: this seed deliberately does not react to later
+  // `props.emails` changes — re-fetches go through the pagination logic instead.
+  const initialEmails = untrack(() => props.emails);
+  const [store, setStore] = createStore<Record<Filter, CategoryState>>({
+    requires_action: {
+      emails: initialEmails,
+      nextCursor: null,
+      initialized: initialEmails.length < PAGE_SIZE,
+      loading: false,
+    },
+    important: emptyState(),
+    noise: emptyState(),
+  });
+
+  const active = (): CategoryState => store[filter()];
 
   const accountById = createMemo(() => {
     const map = new Map<string, EmailAccount>();
@@ -24,11 +85,86 @@ export default function EmailList(props: {
     return map;
   });
 
-  const visible = createMemo(() => {
-    const f = filter();
-    return props.emails
-      .filter((e) => e.priority === f)
-      .sort((a, b) => PRIORITY_ORDER[b.priority] - PRIORITY_ORDER[a.priority]);
+  // Each fetched page already arrives newest-first from the backend; the sort is
+  // kept so display order is unchanged from the previous implementation.
+  const visible = createMemo(() =>
+    active()
+      .emails.slice()
+      .sort((a, b) => CATEGORY_ORDER[b.category] - CATEGORY_ORDER[a.category]),
+  );
+
+  /** Fetch page 1 fresh, replacing whatever the category holds. */
+  async function loadFirstPage(category: Filter): Promise<void> {
+    if (store[category].loading) return;
+    setStore(category, "loading", true);
+    try {
+      const page = await fetchEmails(category);
+      setStore(category, {
+        emails: page.emails,
+        nextCursor: page.nextCursor,
+        initialized: true,
+        loading: false,
+      });
+    } catch {
+      // Keep the existing rows; drop the flag so a later scroll can retry.
+      setStore(category, "loading", false);
+    }
+  }
+
+  /** Fetch the next page and append it. */
+  async function loadNextPage(category: Filter): Promise<void> {
+    const cursor = store[category].nextCursor;
+    if (cursor === null || store[category].loading) return;
+    setStore(category, "loading", true);
+    try {
+      const page = await fetchEmails(category, cursor);
+      setStore(category, "emails", (prev) => [...prev, ...page.emails]);
+      setStore(category, "nextCursor", page.nextCursor);
+      setStore(category, "loading", false);
+    } catch {
+      setStore(category, "loading", false);
+    }
+  }
+
+  function switchTo(category: Filter): void {
+    setFilter(category);
+    const s = store[category];
+    // Load page 1 the first time a category with no rows is opened. This never
+    // fires for the seeded `requires_action` tab (FR-18: no redundant fetch on
+    // initial load), nor when switching back to an already-loaded tab (cache).
+    if (!s.initialized && s.emails.length === 0) {
+      void loadFirstPage(category);
+    }
+  }
+
+  function loadMore(): void {
+    const category = filter();
+    const s = store[category];
+    if (s.loading) return;
+    if (!s.initialized) {
+      // Seeded but cursor unknown (default tab): fetch page 1 to learn it.
+      void loadFirstPage(category);
+    } else if (s.nextCursor !== null) {
+      void loadNextPage(category);
+    }
+    // Exhausted (`nextCursor === null`, initialized): stop — nothing to fetch.
+  }
+
+  // Infinite scroll: observe a sentinel just past the list. When it scrolls into
+  // view (with a little lookahead), pull the next page for the active tab.
+  let sentinel: HTMLDivElement | undefined;
+  onMount(() => {
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) loadMore();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(sentinel);
+    onCleanup(() => observer.disconnect());
   });
 
   return (
@@ -43,7 +179,7 @@ export default function EmailList(props: {
                 classList={{ active: filter() === f.key }}
                 role="tab"
                 aria-selected={filter() === f.key}
-                onClick={() => setFilter(f.key)}
+                onClick={() => switchTo(f.key)}
               >
                 {f.label}
               </button>
@@ -55,23 +191,36 @@ export default function EmailList(props: {
 
       {/* table */}
       <div class="email-table">
-        <For
-          each={visible()}
-          fallback={
+        <Switch>
+          <Match when={visible().length > 0}>
+            <For each={visible()}>
+              {(email, i) => (
+                <EmailRow
+                  email={email}
+                  account={accountById().get(email.accountId)}
+                  index={i()}
+                />
+              )}
+            </For>
+          </Match>
+          <Match when={active().loading}>
+            <div class="state">
+              <div class="spinner" />
+            </div>
+          </Match>
+          <Match when={true}>
             <div class="empty">
               <div class="empty-title">Nothing here ✨</div>
               <p>You've cleared everything in this view.</p>
             </div>
-          }
-        >
-          {(email, i) => (
-            <EmailRow
-              email={email}
-              account={accountById().get(email.accountId)}
-              index={i()}
-            />
-          )}
-        </For>
+          </Match>
+        </Switch>
+        <div
+          ref={(el) => (sentinel = el)}
+          class="scroll-sentinel"
+          style={{ height: "1px" }}
+          aria-hidden="true"
+        />
       </div>
     </section>
   );

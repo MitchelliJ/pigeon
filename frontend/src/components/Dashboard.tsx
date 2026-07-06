@@ -12,7 +12,11 @@ export default function Dashboard(): JSX.Element {
     try {
       return await fetchDashboard();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401 && typeof window !== "undefined") {
+      if (
+        err instanceof ApiError &&
+        err.status === 401 &&
+        typeof window !== "undefined"
+      ) {
         window.location.href = "/login";
       }
       throw err;
@@ -51,7 +55,7 @@ export default function Dashboard(): JSX.Element {
           <>
             <TopBar
               user={d().user}
-              alerts={d().stats.urgent}
+              alerts={d().stats.requires_action}
               inboxCount={d().accounts.length}
             />
             <div class="app">
@@ -60,9 +64,9 @@ export default function Dashboard(): JSX.Element {
 
                 <section class="stats">
                   <StatCard
-                    tone="urgent"
-                    label="Urgent"
-                    count={d().stats.urgent}
+                    tone="requires_action"
+                    label="Requires action"
+                    count={d().stats.requires_action}
                     desc="Needs you now"
                     delay={80}
                   />
@@ -74,10 +78,10 @@ export default function Dashboard(): JSX.Element {
                     delay={140}
                   />
                   <StatCard
-                    tone="everything"
-                    label="Everything else"
-                    count={d().stats.everything}
-                    desc="Saved for your digest"
+                    tone="noise"
+                    label="Noise"
+                    count={d().stats.noise}
+                    desc="Newsletters & receipts"
                     delay={200}
                   />
                 </section>

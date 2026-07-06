@@ -18,7 +18,7 @@ import { describe, it, expect } from "vitest";
 import { withTestDb } from "../../../test/db";
 import { runMigrations } from "../../migrate/runner";
 import { createVault } from "../../vault/index";
-import { enqueueSyncJob } from "../store";
+import { enqueueSyncJob, enqueueClassifyJob } from "../store";
 import { runWorkerTick } from "../worker-loop";
 import type { Db } from "../../db/index";
 import type { Vault } from "../../vault/index";
@@ -28,6 +28,11 @@ import type {
   FetchMessagesResult,
   TestConnectionParams,
 } from "../../mailboxes/connectors/types";
+import type {
+  LlmClassifier,
+  ClassifyInput,
+  ClassifyResult,
+} from "../../llm/index";
 
 const TEST_VAULT_KEY = "J371VUEASEUQsYjxvMKhAklLcZOslC7QAGV9/NWQTbY=";
 
@@ -55,6 +60,38 @@ async function insertMailbox(
       ${vault.seal("fake-password")}
     ) RETURNING id`;
   return String(rows[0]?.id);
+}
+
+/** Insert a minimal valid emails row with `summary IS NULL` (awaiting LLM
+ *  processing), returning its id — mirrors `insertUser`/`insertMailbox`. */
+async function insertEmail(db: Db, mailboxId: string): Promise<string> {
+  const rows = await db.query`
+    INSERT INTO emails(
+      mailbox_id, provider_uid, seen, from_name, from_address,
+      subject, body, received_at
+    ) VALUES (
+      ${mailboxId}, ${"uid-classify"}, ${false}, ${"Alice"},
+      ${"alice@example.com"}, ${"Hello"}, ${"Body text"},
+      ${new Date("2026-01-01T00:00:00Z")}
+    ) RETURNING id`;
+  return String(rows[0]?.id);
+}
+
+interface FakeClassifier extends LlmClassifier {
+  result: ClassifyResult;
+}
+
+/** A fake LlmClassifier whose `result` the test sets before each run, mirroring
+ *  `createFakeConnector`'s mutable-result-holder pattern. */
+function createFakeClassifier(): FakeClassifier {
+  const fake: FakeClassifier = {
+    name: "fake",
+    result: { ok: true, result: { summary: "s", category: "noise" } },
+    async classify(_input: ClassifyInput) {
+      return fake.result;
+    },
+  };
+  return fake;
 }
 
 interface FakeConnector extends MailboxConnector {
@@ -211,6 +248,75 @@ describe("runWorkerTick", () => {
 
       const rows = await db.query`
         SELECT status, last_error FROM jobs WHERE payload->>'mailboxId' = ${mailboxId}`;
+      expect(rows.length).toBe(1);
+      expect(rows[0]?.status).toBe("pending");
+      expect(rows[0]?.last_error).toContain("boom");
+    } finally {
+      await close();
+    }
+  });
+
+  it("claims, dispatches, and completes a pending summarize_classify job, writing summary/category onto the email", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "classify-wiring@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "classify-wiring-mb@example.com",
+      );
+      const emailId = await insertEmail(db, mailboxId);
+      await enqueueClassifyJob(db, emailId);
+
+      const fake = createFakeConnector();
+      const fakeClassifier = createFakeClassifier();
+      fakeClassifier.result = {
+        ok: true,
+        result: { summary: "A short summary", category: "important" },
+      };
+
+      await runWorkerTick(db, vault, 5, () => fake, fakeClassifier);
+
+      const jobRows = await db.query`
+        SELECT status FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+      expect(jobRows.length).toBe(1);
+      expect(jobRows[0]?.status).toBe("succeeded");
+
+      const emailRows = await db.query`
+        SELECT summary, category FROM emails WHERE id = ${emailId}`;
+      expect(emailRows[0]?.summary).toBe("A short summary");
+      expect(emailRows[0]?.category).toBe("important");
+    } finally {
+      await close();
+    }
+  });
+
+  it("fails a summarize_classify job (reschedules to pending with last_error set) when the classifier resolves ok: false", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "classify-failure@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "classify-failure-mb@example.com",
+      );
+      const emailId = await insertEmail(db, mailboxId);
+      await enqueueClassifyJob(db, emailId);
+
+      const fake = createFakeConnector();
+      const fakeClassifier = createFakeClassifier();
+      fakeClassifier.result = { ok: false, reason: "boom" };
+
+      await runWorkerTick(db, vault, 5, () => fake, fakeClassifier);
+
+      const rows = await db.query`
+        SELECT status, last_error FROM jobs WHERE payload->>'emailId' = ${emailId}`;
       expect(rows.length).toBe(1);
       expect(rows[0]?.status).toBe("pending");
       expect(rows[0]?.last_error).toContain("boom");

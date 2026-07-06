@@ -1,5 +1,5 @@
 import type { JSX } from "solid-js";
-import type { ChannelKind, Priority, Provider } from "@pigeon/shared";
+import type { Category, ChannelKind, Provider } from "@pigeon/shared";
 
 /* --------------------------------------------------------------- icons */
 
@@ -311,8 +311,8 @@ export function avatarColor(name: string): string {
   return AVATAR_COLORS[hash % AVATAR_COLORS.length]!;
 }
 
-export const PRIORITY_LABEL: Record<Priority, string> = {
-  urgent: "Urgent",
+export const CATEGORY_LABEL: Record<Category, string> = {
+  requires_action: "Requires action",
   important: "Important",
-  everything: "Everything",
+  noise: "Noise",
 };

@@ -31,6 +31,8 @@ const devConfig: Config = {
   WORKER_POLL_INTERVAL_MS: 5000,
   WORKER_CONCURRENCY: 5,
   SCHEDULER_INTERVAL_MS: 60000,
+  MISTRAL_API_KEY: undefined,
+  MISTRAL_MODEL: "mistral-medium-3-5",
 };
 
 const prodConfig: Config = {

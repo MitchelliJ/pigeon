@@ -13,7 +13,7 @@ export default function Hero(props: {
   name: string;
   stats: Stats;
 }): JSX.Element {
-  const needs = () => props.stats.urgent + props.stats.important;
+  const needs = () => props.stats.requires_action + props.stats.important;
 
   return (
     <header class="hero rise">

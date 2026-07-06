@@ -18,7 +18,8 @@ import { parseConfig } from "./config/index";
 import { createDb } from "./db/index";
 import type { Db } from "./db/index";
 import { createVault } from "./vault/index";
-import { runSchedulerTick } from "./queue/scheduler";
+import { createLlmClassifier } from "./llm/index";
+import { runSchedulerTick, enqueueDueClassifyJobs } from "./queue/scheduler";
 import { runWorkerTick } from "./queue/worker-loop";
 import { loadDotEnv } from "./env";
 
@@ -29,6 +30,7 @@ if (isMain) {
   const config = parseConfig(process.env);
   const db: Db = createDb(config.DATABASE_URL);
   const vault = createVault(config.VAULT_MASTER_KEY);
+  const classifier = createLlmClassifier(config);
   const HEARTBEAT_MS = config.WORKER_HEARTBEAT_INTERVAL_MS;
 
   console.log("🕊️  Pigeon worker started");
@@ -47,18 +49,29 @@ if (isMain) {
     });
   }, config.SCHEDULER_INTERVAL_MS);
 
+  const classifySchedulerTimer = setInterval(() => {
+    void enqueueDueClassifyJobs(db).catch((err: unknown) => {
+      console.error("[scheduler] classify tick failed:", err);
+    });
+  }, config.SCHEDULER_INTERVAL_MS);
+
   const workerTimer = setInterval(() => {
-    void runWorkerTick(db, vault, config.WORKER_CONCURRENCY).catch(
-      (err: unknown) => {
-        console.error("[worker] tick failed:", err);
-      },
-    );
+    void runWorkerTick(
+      db,
+      vault,
+      config.WORKER_CONCURRENCY,
+      undefined,
+      classifier,
+    ).catch((err: unknown) => {
+      console.error("[worker] tick failed:", err);
+    });
   }, config.WORKER_POLL_INTERVAL_MS);
 
   const shutdown = (signal: string): void => {
     console.log(`\n${signal} received, shutting down.`);
     clearInterval(timer);
     clearInterval(schedulerTimer);
+    clearInterval(classifySchedulerTimer);
     clearInterval(workerTimer);
     void db.close().finally(() => process.exit(0));
   };

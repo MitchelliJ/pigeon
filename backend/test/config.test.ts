@@ -38,6 +38,7 @@ describe("parseConfig", () => {
       APP_BASE_URL: "https://app.pigeon.email",
       MAIL_FROM: "Pigeon <noreply@pigeon.email>",
       RESEND_API_KEY: "re_xxx",
+      MISTRAL_API_KEY: "mi_xxx",
       VAULT_MASTER_KEY: TEST_VAULT_KEY,
     });
 
@@ -164,6 +165,7 @@ describe("parseConfig — FR-30/FR-31 new keys", () => {
       APP_BASE_URL: "https://app.pigeon.email",
       MAIL_FROM: "Pigeon <noreply@pigeon.email>",
       RESEND_API_KEY: "re_xxx",
+      MISTRAL_API_KEY: "mi_xxx",
       VAULT_MASTER_KEY: TEST_VAULT_KEY,
     });
 
@@ -293,5 +295,78 @@ describe("parseConfig — queue/scheduler env vars (Feature 5)", () => {
         SCHEDULER_INTERVAL_MS: "not-a-number",
       }),
     ).toThrowError(/SCHEDULER_INTERVAL_MS/);
+  });
+});
+
+describe("parseConfig — MISTRAL_API_KEY / MISTRAL_MODEL (FR-19)", () => {
+  it("defaults MISTRAL_MODEL to 'mistral-medium-3-5' when absent", () => {
+    const cfg = parseConfig({ VAULT_MASTER_KEY: TEST_VAULT_KEY });
+
+    expect(cfg.MISTRAL_MODEL).toBe("mistral-medium-3-5");
+  });
+
+  it("echoes a custom MISTRAL_MODEL when provided", () => {
+    const cfg = parseConfig({
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      MISTRAL_MODEL: "mistral-large-latest",
+    });
+
+    expect(cfg.MISTRAL_MODEL).toBe("mistral-large-latest");
+  });
+
+  it("treats MISTRAL_API_KEY as optional in development (absent env is undefined)", () => {
+    const cfg = parseConfig({ VAULT_MASTER_KEY: TEST_VAULT_KEY });
+
+    expect(cfg.MISTRAL_API_KEY).toBeUndefined();
+  });
+
+  it("throws a ZodError mentioning MISTRAL_API_KEY in production without MISTRAL_API_KEY", () => {
+    expect(() =>
+      parseConfig({
+        NODE_ENV: "production",
+        DATABASE_URL: "postgres://u:p@h:5432/d",
+        APP_BASE_URL: "https://app.pigeon.email",
+        MAIL_FROM: "Pigeon <noreply@pigeon.email>",
+        RESEND_API_KEY: "re_xxx",
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      }),
+    ).toThrowError(/MISTRAL_API_KEY/);
+  });
+
+  it("succeeds in production when MISTRAL_API_KEY is provided and echoes it", () => {
+    const cfg = parseConfig({
+      NODE_ENV: "production",
+      DATABASE_URL: "postgres://u:p@h:5432/d",
+      APP_BASE_URL: "https://app.pigeon.email",
+      MAIL_FROM: "Pigeon <noreply@pigeon.email>",
+      RESEND_API_KEY: "re_xxx",
+      MISTRAL_API_KEY: "mi_xxx",
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
+    });
+
+    expect(cfg.MISTRAL_API_KEY).toBe("mi_xxx");
+  });
+});
+
+describe("describeConfig — MISTRAL_API_KEY / MISTRAL_MODEL (FR-19)", () => {
+  it("redacts MISTRAL_API_KEY as set/not set and reports MISTRAL_MODEL literally", () => {
+    const summary = describeConfig({
+      MISTRAL_API_KEY: "mi_secret",
+      MISTRAL_MODEL: "mistral-large-latest",
+    });
+
+    const json = JSON.stringify(summary);
+    // The secret must never appear in the redacted summary.
+    expect(json).not.toContain("mi_secret");
+    // MISTRAL_API_KEY reports presence only, never the raw value.
+    expect(summary.MISTRAL_API_KEY).toBe("set");
+    // MISTRAL_MODEL is not a secret: reported verbatim.
+    expect(summary.MISTRAL_MODEL).toBe("mistral-large-latest");
+  });
+
+  it("reports MISTRAL_API_KEY as not set when absent", () => {
+    const summary = describeConfig({});
+
+    expect(summary.MISTRAL_API_KEY).toBe("not set");
   });
 });

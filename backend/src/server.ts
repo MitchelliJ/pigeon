@@ -23,6 +23,7 @@ import { createDb } from "./db/index";
 import { authRoutes } from "./auth/routes";
 import { mailboxesRoutes } from "./mailboxes/routes";
 import { dashboardRoutes } from "./mailboxes/dashboard";
+import { emailsRoutes } from "./emails/routes";
 import { oauthRoutes } from "./oauth/routes";
 import { createMailSender } from "./mail/index";
 import { createVault } from "./vault/index";
@@ -62,6 +63,7 @@ export function createApp(db: Db, mail: MailSender, vault: Vault): Hono {
   app.route("/", authRoutes(db, mail));
   app.route("/", mailboxesRoutes(db, vault));
   app.route("/", dashboardRoutes(db));
+  app.route("/", emailsRoutes(db));
   app.route("/", oauthRoutes(db));
 
   return app;

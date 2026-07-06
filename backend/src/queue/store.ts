@@ -75,6 +75,23 @@ export async function enqueueSyncJob(db: Db, mailboxId: string): Promise<void> {
 }
 
 /**
+ * Enqueue a `summarize_classify` job for `emailId` (LLM Processing PRD FR-4).
+ * A no-op when a pending/running job already exists for that email — enforced
+ * by the partial unique index `idx_jobs_summarize_classify_inflight`, which
+ * `ON CONFLICT DO NOTHING` matches without needing an explicit column list.
+ */
+export async function enqueueClassifyJob(
+  db: Db,
+  emailId: string,
+): Promise<void> {
+  await db.query`
+    INSERT INTO jobs (type, payload)
+    VALUES ('summarize_classify', jsonb_build_object('emailId', ${emailId}::text))
+    ON CONFLICT DO NOTHING
+  `;
+}
+
+/**
  * Claim up to `limit` jobs (FR-3, FR-9): fresh `pending` work that's due, and
  * abandoned `running` work past the visibility timeout, in one atomic
  * statement so two concurrent callers never claim the same row

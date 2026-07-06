@@ -6,7 +6,7 @@
  */
 
 /** The closed set of job types. Extended by later features' own migrations. */
-export type JobType = "sync_mailbox";
+export type JobType = "sync_mailbox" | "summarize_classify";
 
 /** The full lifecycle of a job: queued, claimed, or one of two terminal states. */
 export type JobStatus = "pending" | "running" | "succeeded" | "failed";

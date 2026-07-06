@@ -4,10 +4,11 @@
  * endpoints bounces to /login.
  */
 import type {
+  Category,
   DashboardData,
+  Email,
   LoginInput,
   PlanTier,
-  Priority,
   ResetPasswordInput,
   ResetRequestInput,
   SessionUser,
@@ -114,6 +115,23 @@ export function fetchDashboard(): Promise<DashboardData> {
   return call<DashboardData>("/api/dashboard");
 }
 
+// ---- emails ----------------------------------------------------------
+
+/**
+ * One keyset-paginated page of a single category's triaged emails (FR-13).
+ * Omit `cursor` for the newest page; pass the previous response's
+ * `nextCursor` to fetch the next. `nextCursor: null` means the category is
+ * exhausted, which is what stops the feed's infinite scroll.
+ */
+export function fetchEmails(
+  category: Category,
+  cursor?: string,
+): Promise<{ emails: Email[]; nextCursor: string | null }> {
+  const params = new URLSearchParams({ category });
+  if (cursor) params.set("cursor", cursor);
+  return call(`/api/emails?${params.toString()}`);
+}
+
 // ---- mailboxes -------------------------------------------------------
 
 export const mailboxes = {
@@ -145,7 +163,7 @@ export const channels = {
     kind: string;
     label: string;
     config: Record<string, string>;
-    minPriority: Priority;
+    minCategory: Category;
   }) =>
     call<{ channel: unknown }>("/api/channels", {
       method: "POST",
@@ -156,7 +174,7 @@ export const channels = {
     patch: {
       label?: string;
       enabled?: boolean;
-      minPriority?: Priority;
+      minCategory?: Category;
       config?: Record<string, string>;
     },
   ) =>
@@ -195,13 +213,12 @@ export interface Profile {
   name: string;
   email: string;
   tier: string;
-  llmInstructions: string;
 }
 
 export const profile = {
   get: () =>
     call<{ profile: Profile }>("/api/settings/profile").then((r) => r.profile),
-  update: (patch: { name?: string; llmInstructions?: string }) =>
+  update: (patch: { name?: string }) =>
     call<{ profile: Profile }>("/api/settings/profile", {
       method: "PATCH",
       body: JSON.stringify(patch),

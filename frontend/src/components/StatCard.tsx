@@ -1,8 +1,8 @@
 import type { JSX } from "solid-js";
-import type { Priority } from "@pigeon/shared";
+import type { Category } from "@pigeon/shared";
 
 export default function StatCard(props: {
-  tone: Priority;
+  tone: Category;
   label: string;
   count: number;
   desc: string;

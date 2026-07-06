@@ -21,13 +21,17 @@
  *   caller's mailboxes, formatted as a short relative-time string (or
  *   "Never" if no mailbox has ever synced).
  *
+ * `stats` and `emails` are also real now: `stats` is the caller's classified
+ * counts per category (Feature 6) and `emails` is the caller's first page of
+ * `requires_action` mail (Feature 4/6), both read via the emails service.
+ *
  * Everything else is an inert placeholder, owned by a later feature:
- * `stats` (Feature 6), `emails` (Feature 4/6), `channels`/`digest`
- * (Feature 7).
+ * `channels`/`digest` (Feature 7).
  */
 import { Hono } from "hono";
 import { tierLimits } from "@pigeon/shared";
 import { requireAuth } from "../auth/middleware";
+import { loadCategoryCounts, loadEmailPage } from "../emails/service";
 import type { AuthVariables } from "../auth/middleware";
 import type { Db } from "../db/index";
 import type { DashboardData, EmailAccount, Plan } from "@pigeon/shared";
@@ -135,6 +139,14 @@ export function dashboardRoutes(db: Db): Hono<{ Variables: AuthVariables }> {
   app.get("/api/dashboard", requireAuth(db), async (c) => {
     const sessionUser = c.get("sessionUser");
     const accounts = await loadAccounts(db, sessionUser.id);
+    const stats = await loadCategoryCounts(db, sessionUser.id);
+    const { emails } = await loadEmailPage(
+      db,
+      sessionUser.id,
+      "requires_action",
+      undefined, // undefined cursor = first page.
+      10, // First page is capped at 10 emails (FR-12).
+    );
     const lastSyncedAt = await loadLastSyncedAt(db, sessionUser.id);
 
     const dashboard: DashboardData = {
@@ -144,8 +156,8 @@ export function dashboardRoutes(db: Db): Hono<{ Variables: AuthVariables }> {
         plan: planFor(sessionUser.tier),
       },
       accounts,
-      stats: { urgent: 0, important: 0, everything: 0 }, // Feature 6 owns real stats.
-      emails: [], // Feature 4/6 owns real triaged emails.
+      stats,
+      emails,
       channels: [], // Feature 7 owns real notification channels.
       digest: {
         enabled: false,

@@ -6,8 +6,13 @@
  * type-only on both sides, so there is no runtime coupling.
  */
 
-/** How loudly an email wants your attention. */
-export type Priority = "urgent" | "important" | "everything";
+/**
+ * How Pigeon triages an email:
+ * - `requires_action` — needs a human reply or decision.
+ * - `important` — worth knowing about (FYI), but no action required.
+ * - `noise` — status updates, newsletters, and other low-signal mail.
+ */
+export type Category = "requires_action" | "important" | "noise";
 
 /** Email providers we know how to render a badge / connect flow for. */
 export type Provider =
@@ -37,12 +42,12 @@ export interface Email {
   summary: string;
   /** Full plain-text body of the email, shown when the row is expanded. */
   body: string;
-  priority: Priority;
+  category: Category;
   /** Short relative string, e.g. "12m ago". */
   receivedAt: string;
   /** True when Pigeon thinks this genuinely needs a human reply/decision. */
   needsAttention: boolean;
-  /** Suggested inline action label for urgent items, e.g. "Reply now". */
+  /** Suggested inline action label for requires_action items, e.g. "Reply now". */
   suggestedAction?: string;
 }
 
@@ -56,8 +61,8 @@ export interface Channel {
   label: string;
   /** Outgoing webhook URL Pigeon posts to. Empty until configured. */
   webhookUrl: string;
-  /** Only notify this channel for emails at/above this priority. */
-  minPriority: Priority;
+  /** Only notify this channel for emails at/above this category. */
+  minCategory: Category;
   enabled: boolean;
 }
 
@@ -74,7 +79,7 @@ export const WEEKDAYS: Weekday[] = [
   "Sun",
 ];
 
-/** The once-a-day rollup of everything that wasn't urgent. */
+/** The once-a-day rollup of everything that didn't require action. */
 export interface Digest {
   enabled: boolean;
   /** 24h time string, e.g. "08:00". */
@@ -86,11 +91,11 @@ export interface Digest {
   lastSent: string;
 }
 
-/** Counts that drive the priority stat cards. */
+/** Counts that drive the category stat cards. */
 export interface Stats {
-  urgent: number;
+  requires_action: number;
   important: number;
-  everything: number;
+  noise: number;
 }
 
 /** Subscription tiers, cheapest → most capable. */
@@ -173,10 +178,10 @@ export interface DashboardData {
   lastSync: string;
 }
 
-export const PRIORITY_ORDER: Record<Priority, number> = {
-  urgent: 3,
+export const CATEGORY_ORDER: Record<Category, number> = {
+  requires_action: 3,
   important: 2,
-  everything: 1,
+  noise: 1,
 };
 
 /** Hard limits per subscription tier — enforced server-side, shown in the UI. */

@@ -14,8 +14,8 @@
 import { describe, it, expect } from "vitest";
 import { withTestDb } from "../../../test/db";
 import { runMigrations } from "../../migrate/runner";
-import { enqueueSyncJob } from "../store";
-import { runSchedulerTick } from "../scheduler";
+import { enqueueSyncJob, enqueueClassifyJob } from "../store";
+import { runSchedulerTick, enqueueDueClassifyJobs } from "../scheduler";
 import type { Db } from "../../db/index";
 
 async function insertUser(
@@ -45,6 +45,25 @@ async function insertMailbox(
       ${userId}, ${"imap"}, ${"imap"}, ${"Work"}, ${address},
       ${"imap.example.com"}, ${993}, ${true}, ${address},
       ${"gcm:iv:tag:ct"}, ${lastSyncedAt}, ${status ?? "connected"}
+    ) RETURNING id`;
+  return String(rows[0]?.id);
+}
+
+async function insertEmail(
+  db: Db,
+  mailboxId: string,
+  overrides?: { summary?: string; category?: string; classifiedAt?: Date },
+): Promise<string> {
+  const rows = await db.query`
+    INSERT INTO emails(
+      mailbox_id, provider_uid, seen, from_name, from_address,
+      subject, body, received_at, summary, category, classified_at
+    ) VALUES (
+      ${mailboxId}, ${`uid-${Math.random().toString(36).slice(2)}`}, ${false},
+      ${"Alice"}, ${"alice@example.com"}, ${"Hello"}, ${"Body text"},
+      ${new Date("2026-01-01T00:00:00Z")},
+      ${overrides?.summary ?? null}, ${overrides?.category ?? null},
+      ${overrides?.classifiedAt ?? null}
     ) RETURNING id`;
   return String(rows[0]?.id);
 }
@@ -168,6 +187,80 @@ describe("scheduler", () => {
 
       const rows = await db.query`
         SELECT id FROM jobs WHERE payload->>'mailboxId' = ${mailboxId}`;
+      expect(rows.length).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  it("enqueues a pending summarize_classify job for an email whose summary IS NULL", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "classify-due@example.com", "free");
+      const mailboxId = await insertMailbox(
+        db,
+        userId,
+        "classify-due-mb@example.com",
+        null,
+      );
+      const emailId = await insertEmail(db, mailboxId);
+
+      await enqueueDueClassifyJobs(db);
+
+      const rows = await db.query`
+        SELECT status, type FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+      expect(rows).toEqual([{ status: "pending", type: "summarize_classify" }]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("does not enqueue an already-classified email (summary set)", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "classify-done@example.com", "free");
+      const mailboxId = await insertMailbox(
+        db,
+        userId,
+        "classify-done-mb@example.com",
+        null,
+      );
+      const emailId = await insertEmail(db, mailboxId, {
+        summary: "Already summarized",
+        category: "noise",
+        classifiedAt: new Date("2026-01-02T00:00:00Z"),
+      });
+
+      await enqueueDueClassifyJobs(db);
+
+      const rows = await db.query`
+        SELECT id FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+      expect(rows.length).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("does not double-enqueue an email that already has an in-flight summarize_classify job", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "classify-dupe@example.com", "free");
+      const mailboxId = await insertMailbox(
+        db,
+        userId,
+        "classify-dupe-mb@example.com",
+        null,
+      );
+      const emailId = await insertEmail(db, mailboxId);
+      await enqueueClassifyJob(db, emailId);
+
+      await enqueueDueClassifyJobs(db);
+
+      const rows = await db.query`
+        SELECT id FROM jobs WHERE payload->>'emailId' = ${emailId}`;
       expect(rows.length).toBe(1);
     } finally {
       await close();

@@ -7,7 +7,7 @@ import {
   Show,
 } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { ChannelKind, Priority } from "@pigeon/shared";
+import type { Category, ChannelKind } from "@pigeon/shared";
 import { ApiError, channels as channelsApi } from "../lib/api";
 import { channelVisual, CloseIcon } from "./visuals";
 
@@ -45,10 +45,10 @@ const CHANNELS: {
   },
 ];
 
-const PRIORITIES: { value: Priority; label: string }[] = [
-  { value: "urgent", label: "Urgent only" },
-  { value: "important", label: "Important & urgent" },
-  { value: "everything", label: "Everything" },
+const CATEGORIES: { value: Category; label: string }[] = [
+  { value: "requires_action", label: "Requires action only" },
+  { value: "important", label: "Important & above" },
+  { value: "noise", label: "Everything" },
 ];
 
 export default function AddChannelDialog(props: {
@@ -63,7 +63,7 @@ export default function AddChannelDialog(props: {
   const [form, setForm] = createSignal({
     label: "",
     value: "",
-    minPriority: "urgent" as Priority,
+    minCategory: "requires_action" as Category,
   });
 
   const [supported] = createResource(() =>
@@ -77,14 +77,14 @@ export default function AddChannelDialog(props: {
     setKind("discord");
     setBusy(false);
     setError(null);
-    setForm({ label: "", value: "", minPriority: "urgent" });
+    setForm({ label: "", value: "", minCategory: "requires_action" });
   });
 
   function pick(k: ChannelKind) {
     const c = CHANNELS.find((x) => x.kind === k)!;
     setKind(k);
     setError(null);
-    setForm({ label: c.name, value: "", minPriority: "urgent" });
+    setForm({ label: c.name, value: "", minCategory: "requires_action" });
     setStep(2);
   }
 
@@ -99,7 +99,7 @@ export default function AddChannelDialog(props: {
         kind: kind(),
         label: f.label.trim() || meta().name,
         config: { [meta().configKey]: f.value.trim() },
-        minPriority: f.minPriority,
+        minCategory: f.minCategory,
       });
       props.onConnected();
       props.onClose();
@@ -215,17 +215,17 @@ export default function AddChannelDialog(props: {
                 <div class="field">
                   <label class="field-label">Notify me about</label>
                   <div class="field-pair">
-                    <For each={PRIORITIES}>
+                    <For each={CATEGORIES}>
                       {(p) => (
                         <button
                           type="button"
                           class="btn"
                           classList={{
-                            "btn-primary": form().minPriority === p.value,
+                            "btn-primary": form().minCategory === p.value,
                           }}
                           style={{ flex: 1 }}
                           onClick={() =>
-                            setForm({ ...form(), minPriority: p.value })
+                            setForm({ ...form(), minCategory: p.value })
                           }
                         >
                           {p.label}

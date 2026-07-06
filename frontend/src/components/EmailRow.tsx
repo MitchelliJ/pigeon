@@ -21,7 +21,7 @@ export default function EmailRow(props: {
 
   return (
     <article
-      class={`email ${email().priority} rise`}
+      class={`email ${email().category} rise`}
       classList={{ expanded: expanded() }}
       style={{ "animation-delay": `${Math.min(props.index * 45, 300)}ms` }}
       role="button"

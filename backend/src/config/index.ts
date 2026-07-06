@@ -28,6 +28,10 @@ const configSchema = z
     MAIL_FROM: z.string().min(1).optional(),
     // Resend API key. Secret — never echoed. Optional in dev; production requires it.
     RESEND_API_KEY: z.string().optional(),
+    // Mistral API key. Secret — never echoed. Optional in dev; production requires it.
+    MISTRAL_API_KEY: z.string().optional(),
+    // Mistral model used for LLM processing. Defaults to mistral-medium-3-5.
+    MISTRAL_MODEL: z.string().default("mistral-medium-3-5"),
     // Whether new sign-ups are accepted. Accepts the strings "true"/"false"
     // from env (z.coerce.boolean() would misread "false" as true).
     SIGNUP_OPEN: z
@@ -80,7 +84,7 @@ const configSchema = z
     }
     // Production-only required vars. Test env runs without these.
     const requireInProd = (
-      name: "APP_BASE_URL" | "MAIL_FROM" | "RESEND_API_KEY",
+      name: "APP_BASE_URL" | "MAIL_FROM" | "RESEND_API_KEY" | "MISTRAL_API_KEY",
       value: string | undefined,
     ) => {
       if (data.NODE_ENV === "production" && !value) {
@@ -94,6 +98,7 @@ const configSchema = z
     requireInProd("APP_BASE_URL", data.APP_BASE_URL);
     requireInProd("MAIL_FROM", data.MAIL_FROM);
     requireInProd("RESEND_API_KEY", data.RESEND_API_KEY);
+    requireInProd("MISTRAL_API_KEY", data.MISTRAL_API_KEY);
 
     // VAULT_MASTER_KEY is required in every NODE_ENV (not just production):
     // a missing/malformed key would silently break vault.seal/open the
@@ -125,6 +130,8 @@ export type Config = {
   APP_BASE_URL: string;
   MAIL_FROM: string | undefined;
   RESEND_API_KEY: string | undefined;
+  MISTRAL_API_KEY: string | undefined;
+  MISTRAL_MODEL: string;
   SIGNUP_OPEN: boolean;
   LOG_LEVEL: "trace" | "debug" | "info" | "warn" | "error";
   WORKER_HEARTBEAT_INTERVAL_MS: number;
@@ -158,6 +165,8 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     APP_BASE_URL,
     MAIL_FROM: parsed.MAIL_FROM,
     RESEND_API_KEY: parsed.RESEND_API_KEY,
+    MISTRAL_API_KEY: parsed.MISTRAL_API_KEY,
+    MISTRAL_MODEL: parsed.MISTRAL_MODEL,
     SIGNUP_OPEN: parsed.SIGNUP_OPEN,
     LOG_LEVEL: parsed.LOG_LEVEL,
     WORKER_HEARTBEAT_INTERVAL_MS: parsed.WORKER_HEARTBEAT_INTERVAL_MS,
@@ -200,6 +209,7 @@ export function describeConfig(
   // MAIL_FROM, RESEND_API_KEY, and VAULT_MASTER_KEY are secrets: presence only.
   const mailFrom = p?.MAIL_FROM ?? env.MAIL_FROM;
   const resendApiKey = p?.RESEND_API_KEY ?? env.RESEND_API_KEY;
+  const mistralApiKey = p?.MISTRAL_API_KEY ?? env.MISTRAL_API_KEY;
   const vaultMasterKey = p?.VAULT_MASTER_KEY ?? env.VAULT_MASTER_KEY;
   // SIGNUP_OPEN: report as a label (not the raw env string).
   const signupOpen = (() => {
@@ -214,6 +224,10 @@ export function describeConfig(
     APP_BASE_URL: appBaseUrl,
     MAIL_FROM: mailFrom ? "set" : "not set",
     RESEND_API_KEY: resendApiKey ? "set" : "not set",
+    MISTRAL_API_KEY: mistralApiKey ? "set" : "not set",
+    // MISTRAL_MODEL is not a secret: report the resolved (defaulted) value
+    // when parsing succeeds, else the raw env value, else "not set".
+    MISTRAL_MODEL: p ? p.MISTRAL_MODEL : (env.MISTRAL_MODEL ?? "not set"),
     SIGNUP_OPEN: signupOpen,
     LOG_LEVEL: pick("LOG_LEVEL"),
     HOST: pick("HOST"),

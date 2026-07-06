@@ -14,7 +14,13 @@
 import { describe, it, expect, vi } from "vitest";
 import { withTestDb } from "../../../test/db";
 import { runMigrations } from "../../migrate/runner";
-import { enqueueSyncJob, claimJobs, completeJob, failJob } from "../store";
+import {
+  enqueueSyncJob,
+  enqueueClassifyJob,
+  claimJobs,
+  completeJob,
+  failJob,
+} from "../store";
 import type { Db } from "../../db/index";
 
 async function insertUser(db: Db, email: string): Promise<string> {
@@ -38,6 +44,18 @@ async function insertMailbox(
       ${userId}, ${"imap"}, ${"imap"}, ${"Work"}, ${address},
       ${"imap.example.com"}, ${993}, ${true}, ${address},
       ${"gcm:iv:tag:ct"}
+    ) RETURNING id`;
+  return String(rows[0]?.id);
+}
+
+async function insertEmail(db: Db, mailboxId: string): Promise<string> {
+  const rows = await db.query`
+    INSERT INTO emails(
+      mailbox_id, provider_uid, seen, from_name, from_address,
+      subject, body, received_at
+    ) VALUES (
+      ${mailboxId}, ${"uid-1"}, ${false}, ${"Alice"}, ${"alice@example.com"},
+      ${"Hello"}, ${"Body text"}, ${new Date("2026-01-01T00:00:00Z")}
     ) RETURNING id`;
   return String(rows[0]?.id);
 }
@@ -129,6 +147,77 @@ describe("queue store", () => {
 
       const rows = await db.query`
         SELECT status FROM jobs WHERE payload->>'mailboxId' = ${mailboxId} ORDER BY created_at`;
+      expect(rows.length).toBe(2);
+      expect(rows[1]?.status).toBe("pending");
+    } finally {
+      await close();
+    }
+  });
+
+  it("enqueueClassifyJob inserts a pending summarize_classify job for an email with no existing job", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "classify-fresh@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        userId,
+        "classify-fresh-mb@example.com",
+      );
+      const emailId = await insertEmail(db, mailboxId);
+
+      await enqueueClassifyJob(db, emailId);
+
+      const rows = await db.query`
+        SELECT type, status FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+      expect(rows).toEqual([{ type: "summarize_classify", status: "pending" }]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("enqueueClassifyJob is a no-op when a pending job already exists for that email", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "classify-dupe@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        userId,
+        "classify-dupe-mb@example.com",
+      );
+      const emailId = await insertEmail(db, mailboxId);
+
+      await enqueueClassifyJob(db, emailId);
+      await enqueueClassifyJob(db, emailId);
+
+      const rows = await db.query`
+        SELECT id FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+      expect(rows.length).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  it("enqueueClassifyJob succeeds again once the prior job is no longer in-flight", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "classify-resurrect@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        userId,
+        "classify-resurrect-mb@example.com",
+      );
+      const emailId = await insertEmail(db, mailboxId);
+
+      await enqueueClassifyJob(db, emailId);
+      await db.query`
+        UPDATE jobs SET status = 'succeeded' WHERE payload->>'emailId' = ${emailId}`;
+      await enqueueClassifyJob(db, emailId);
+
+      const rows = await db.query`
+        SELECT status FROM jobs WHERE payload->>'emailId' = ${emailId} ORDER BY created_at`;
       expect(rows.length).toBe(2);
       expect(rows[1]?.status).toBe("pending");
     } finally {

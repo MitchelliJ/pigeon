@@ -10,7 +10,7 @@
  * are scheduled the same as any other (AC-9: no status filtering).
  */
 import type { Db } from "../db/index";
-import { enqueueSyncJob } from "./store";
+import { enqueueSyncJob, enqueueClassifyJob } from "./store";
 import { intervalForTier } from "./tiers";
 
 /** Raw snake_case row shape joining `mailboxes` to their owner's `tier`. */
@@ -48,4 +48,22 @@ export async function runSchedulerTick(db: Db): Promise<void> {
   await Promise.all(
     dueMailboxIds.map((mailboxId) => enqueueSyncJob(db, mailboxId)),
   );
+}
+
+/**
+ * Enqueue a `summarize_classify` job for every email still awaiting LLM
+ * processing (LLM Processing PRD §3.2 FR-9). `summary IS NULL` does double
+ * duty here: it's both the work-selection predicate and — because the handler
+ * writes its results under a `WHERE summary IS NULL` guard — the idempotency
+ * check, so an email that's already been summarized is never re-picked. The
+ * 500-row cap bounds each tick's work, with any backlog picked up across
+ * subsequent ticks. As with `runSchedulerTick`/`enqueueSyncJob`,
+ * `enqueueClassifyJob`'s partial unique index absorbs already-in-flight jobs,
+ * so no special-casing is needed here to avoid duplicates.
+ */
+export async function enqueueDueClassifyJobs(db: Db): Promise<void> {
+  const rows = await db.query`
+    SELECT id FROM emails WHERE summary IS NULL ORDER BY received_at LIMIT 500
+  `;
+  await Promise.all(rows.map((row) => enqueueClassifyJob(db, String(row.id))));
 }
