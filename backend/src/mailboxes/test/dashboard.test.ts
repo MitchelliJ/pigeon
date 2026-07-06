@@ -49,15 +49,19 @@ async function createUserWithSession(
   return { userId, token };
 }
 
-/** Insert a mailbox row directly for `userId`, sealing a dummy password via `vault`. */
+/**
+ * Insert a mailbox row directly for `userId`, sealing a dummy password via
+ * `vault`. Returns the new mailbox's id (existing callers that ignore the
+ * return value are unaffected).
+ */
 async function insertMailbox(
   db: Db,
   vault: Vault,
   userId: string,
   address: string,
   label: string,
-): Promise<void> {
-  await db.query`
+): Promise<string> {
+  const rows = await db.query`
     INSERT INTO mailboxes (
       user_id, provider, protocol, label, address, host, port, tls,
       username, password_ciphertext, status
@@ -65,6 +69,52 @@ async function insertMailbox(
     VALUES (
       ${userId}, 'imap', 'imap', ${label}, ${address}, 'imap.example.com',
       993, true, ${address}, ${vault.seal("whatever")}, 'connected'
+    )
+    RETURNING id
+  `;
+  return String(rows[0]?.id);
+}
+
+/**
+ * Insert a mailbox row directly for `userId` with an explicit `protocol`
+ * (`insertMailbox` above hardcodes `protocol: 'imap'`, which the POP3 test
+ * below needs to override).
+ */
+async function insertMailboxWithProtocol(
+  db: Db,
+  vault: Vault,
+  userId: string,
+  address: string,
+  label: string,
+  protocol: string,
+): Promise<string> {
+  const rows = await db.query`
+    INSERT INTO mailboxes (
+      user_id, provider, protocol, label, address, host, port, tls,
+      username, password_ciphertext, status
+    )
+    VALUES (
+      ${userId}, 'imap', ${protocol}, ${label}, ${address}, 'imap.example.com',
+      993, true, ${address}, ${vault.seal("whatever")}, 'connected'
+    )
+    RETURNING id
+  `;
+  return String(rows[0]?.id);
+}
+
+/** Insert a minimal-but-valid `emails` row for `mailboxId`. */
+async function insertEmail(
+  db: Db,
+  mailboxId: string,
+  providerUid: string,
+  seen: boolean,
+): Promise<void> {
+  await db.query`
+    INSERT INTO emails (
+      mailbox_id, provider_uid, seen, from_name, from_address, subject, body, received_at
+    )
+    VALUES (
+      ${mailboxId}, ${providerUid}, ${seen}, 'A', 'a@example.com', 'S', 'B', now()
     )
   `;
 }
@@ -167,6 +217,131 @@ describe("GET /api/dashboard", () => {
       const res = await app.request("/api/dashboard");
 
       expect(res.status).toBe(401);
+    } finally {
+      await close();
+    }
+  });
+
+  it("reflects a live unseen-email count in accounts[].unread for an IMAP mailbox", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const { userId, token } = await createUserWithSession(
+        db,
+        "kim@example.com",
+        "Kim Example",
+      );
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "kim-inbox@example.com",
+        "Kim Inbox",
+      );
+      await insertEmail(db, mailboxId, "uid-1", false);
+      await insertEmail(db, mailboxId, "uid-2", false);
+      await insertEmail(db, mailboxId, "uid-3", true);
+
+      const app = dashboardRoutes(db);
+      const res = await app.request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        accounts: Array<{ address: string; unread: number }>;
+      };
+      const account = body.accounts.find(
+        (a) => a.address === "kim-inbox@example.com",
+      );
+      expect(account?.unread).toBe(2);
+    } finally {
+      await close();
+    }
+  });
+
+  it("always reports 0 unread for a POP3-protocol mailbox, even with unseen rows", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const { userId, token } = await createUserWithSession(
+        db,
+        "leo@example.com",
+        "Leo Example",
+      );
+      const mailboxId = await insertMailboxWithProtocol(
+        db,
+        vault,
+        userId,
+        "leo-pop3@example.com",
+        "Leo POP3",
+        "pop3",
+      );
+      await insertEmail(db, mailboxId, "uid-1", false);
+      await insertEmail(db, mailboxId, "uid-2", false);
+
+      const app = dashboardRoutes(db);
+      const res = await app.request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        accounts: Array<{ address: string; unread: number }>;
+      };
+      const account = body.accounts.find(
+        (a) => a.address === "leo-pop3@example.com",
+      );
+      expect(account?.unread).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("reflects the most recent mailboxes.last_synced_at as a relative-time string in lastSync", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const { userId, token } = await createUserWithSession(
+        db,
+        "mona@example.com",
+        "Mona Example",
+      );
+      const olderMailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "mona-old@example.com",
+        "Mona Old",
+      );
+      const recentMailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "mona-recent@example.com",
+        "Mona Recent",
+      );
+      await db.query`
+        UPDATE mailboxes SET last_synced_at = now() - interval '2 hours'
+        WHERE id = ${olderMailboxId}
+      `;
+      await db.query`
+        UPDATE mailboxes SET last_synced_at = now() - interval '5 minutes'
+        WHERE id = ${recentMailboxId}
+      `;
+
+      const app = dashboardRoutes(db);
+      const res = await app.request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lastSync: string };
+      expect(body.lastSync).toMatch(/ago$/);
+      expect(body.lastSync).not.toBe("Never");
     } finally {
       await close();
     }

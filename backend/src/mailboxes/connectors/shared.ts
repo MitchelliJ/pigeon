@@ -38,14 +38,23 @@ function readLines(socket: TLSSocket, onLine: (line: string) => void): void {
 /**
  * A protocol implementation's exchange, run once the TLS handshake
  * completes. `subscribe` registers the (single, stateful) line handler that
- * drives the protocol's LOGIN/USER+PASS steps; `finish` resolves the overall
- * `testConnection` call once the protocol has seen enough to know
+ * drives the protocol's LOGIN/USER+PASS steps (and, for POP3's
+ * `listMessageIds`/`fetchMessages`, later steps too — see pop3.ts); `finish`
+ * resolves the overall call once the protocol has seen enough to know
  * success/failure.
+ *
+ * Generic over the result shape so this same connect/timeout/cert plumbing
+ * is reusable for `testConnection` (`TestConnectionResult`) as well as
+ * POP3's `listMessageIds`/`fetchMessages` (`ListMessageIdsResult`/
+ * `FetchMessagesResult`) — every one of those result types shares the same
+ * `{ ok: false; reason: string }` failure shape.
  */
-type Negotiate = (
+type ConnectorResult = { ok: true } | { ok: false; reason: string };
+
+type Negotiate<TResult extends ConnectorResult> = (
   socket: TLSSocket,
   subscribe: (onLine: (line: string) => void) => void,
-  finish: (result: TestConnectionResult) => void,
+  finish: (result: TResult) => void,
 ) => void;
 
 /**
@@ -55,16 +64,22 @@ type Negotiate = (
  * certificate-validation failures, and timeouts all resolve
  * `{ ok: false, reason }` instead of rejecting/throwing.
  */
-export function testTlsConnection(
+export function testTlsConnection<
+  TResult extends ConnectorResult = TestConnectionResult,
+>(
   params: TestConnectionParams,
-  negotiate: Negotiate,
-): Promise<TestConnectionResult> {
+  negotiate: Negotiate<TResult>,
+): Promise<TResult> {
   const { host, port } = params;
   const unreachableReason = `could not reach ${host}:${port}`;
+  // `{ ok: false, reason }` satisfies every `TResult` this function is used
+  // with (see `ConnectorResult` above) — the cast just tells TypeScript what
+  // every caller already guarantees structurally.
+  const unreachableResult = { ok: false, reason: unreachableReason } as TResult;
 
   return new Promise((resolve) => {
     let settled = false;
-    const settle = (result: TestConnectionResult): void => {
+    const settle = (result: TResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -73,7 +88,7 @@ export function testTlsConnection(
     };
 
     const timer = setTimeout(() => {
-      settle({ ok: false, reason: unreachableReason });
+      settle(unreachableResult);
     }, params.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
 
     const socket = tlsConnect({
@@ -95,11 +110,33 @@ export function testTlsConnection(
           `[mailboxes] TLS certificate validation failed for ${host}:${port}: ${err.code}`,
         );
       }
-      settle({ ok: false, reason: unreachableReason });
+      settle(unreachableResult);
     });
 
     socket.on("secureConnect", () => {
       negotiate(socket, (onLine) => readLines(socket, onLine), settle);
     });
   });
+}
+
+/**
+ * Accumulates lines fed to the returned handler until a lone "." line (POP3's
+ * multi-line response terminator — RFC 1939 §3), then calls `onComplete`
+ * with the accumulated lines (the terminator itself excluded). Used by
+ * pop3.ts's `listMessageIds`/`fetchMessages` for `UIDL`/`TOP`/`RETR`, whose
+ * replies are all "one status line, then a dot-terminated block" — unlike
+ * `testConnection`'s single-line `+OK`/`-ERR` exchanges, which don't need
+ * this.
+ */
+export function readDotTerminatedBlock(
+  onComplete: (lines: string[]) => void,
+): (line: string) => void {
+  const lines: string[] = [];
+  return (line: string): void => {
+    if (line === ".") {
+      onComplete(lines);
+      return;
+    }
+    lines.push(line);
+  };
 }

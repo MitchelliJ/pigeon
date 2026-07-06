@@ -127,17 +127,131 @@ export function startFakeImapServerThatNeverResponds(): Promise<FakeServerHandle
 }
 
 /**
+ * Metadata for one scripted POP3 fixture message (PRD "Incremental Sync
+ * Engine & Watermarks" §3.6 FR-16). Dates are computed relative to "now" at
+ * server-start time (not baked in at module-load time) so the "within the
+ * last 7 days" / "older than 7 days" fixture messages stay correct no matter
+ * when the test suite actually runs.
+ */
+export type Pop3FixtureMessage = {
+  uidl: string;
+  fromName: string;
+  fromAddress: string;
+  subject: string;
+  date: Date;
+  /** CRLF-joined header lines, no leading/trailing blank line. */
+  headers: string;
+  /**
+   * CRLF-joined body lines. Deliberately free of any line starting with a
+   * literal "." so the fixture never needs real POP3 byte-stuffing/
+   * dot-un-stuffing (production code isn't expected to handle it either,
+   * since these fixtures are the only POP3 "wire" it's tested against).
+   */
+  body: string;
+};
+
+/** Stable UIDLs the fixture below always reports, in message-number order. */
+export const POP3_FIXTURE_UIDLS = ["uid-1", "uid-2", "uid-3"];
+
+/**
+ * Builds the 3 scripted fixture messages: a recent plain-text message, a
+ * recent HTML-only message (no `text/plain` part at all), and a plain-text
+ * message older than the 7-day first-sync cap (FR-8).
+ */
+function buildPop3FixtureMessages(): Pop3FixtureMessage[] {
+  const now = Date.now();
+  const oneDayAgo = new Date(now - 1 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+  // `Date` headers round-trip through `toUTCString()`, which only has
+  // second-level precision — zero out milliseconds here so a test can
+  // compare a parsed `receivedAt` back against this exact `Date` object
+  // with `.getTime()` equality instead of a fuzzy tolerance.
+  oneDayAgo.setMilliseconds(0);
+  thirtyDaysAgo.setMilliseconds(0);
+
+  return [
+    {
+      uidl: POP3_FIXTURE_UIDLS[0]!,
+      fromName: "Alice",
+      fromAddress: "alice@example.com",
+      subject: "Hello there",
+      date: oneDayAgo,
+      headers: [
+        "From: Alice <alice@example.com>",
+        "Subject: Hello there",
+        `Date: ${oneDayAgo.toUTCString()}`,
+        "Content-Type: text/plain",
+      ].join("\r\n"),
+      body: ["Hi Bob,", "", "Just checking in.", "", "Alice"].join("\r\n"),
+    },
+    {
+      uidl: POP3_FIXTURE_UIDLS[1]!,
+      fromName: "Carol",
+      fromAddress: "carol@example.com",
+      subject: "HTML update",
+      date: oneDayAgo,
+      headers: [
+        "From: Carol <carol@example.com>",
+        "Subject: HTML update",
+        `Date: ${oneDayAgo.toUTCString()}`,
+        "Content-Type: text/html",
+      ].join("\r\n"),
+      body: "<html><body><p>Hello from Carol</p></body></html>",
+    },
+    {
+      uidl: POP3_FIXTURE_UIDLS[2]!,
+      fromName: "Dave",
+      fromAddress: "dave@example.com",
+      subject: "Old news",
+      date: thirtyDaysAgo,
+      headers: [
+        "From: Dave <dave@example.com>",
+        "Subject: Old news",
+        `Date: ${thirtyDaysAgo.toUTCString()}`,
+        "Content-Type: text/plain",
+      ].join("\r\n"),
+      body: "This is old news from a month ago.",
+    },
+  ];
+}
+
+/**
+ * A `FakeServerHandle` plus the exact scripted fixture message metadata
+ * (with their `date`s already computed) so tests can assert against them
+ * (e.g. exact `receivedAt` equality) without recomputing "now" separately
+ * and risking an off-by-a-few-milliseconds mismatch.
+ */
+export type FakePop3ServerHandle = FakeServerHandle & {
+  messages: Pop3FixtureMessage[];
+};
+
+/**
  * Fake POP3 server: greets, accepts `USER <name>` (always `+OK`, per POP3),
  * then `PASS <pass>` (`+OK`/`-ERR` depending on both matching), then `QUIT`
- * (`+OK Goodbye`, then closes).
+ * (`+OK Goodbye`, then closes). Once logged in, also answers `LIST`/`UIDL`
+ * (for `listMessageIds`) and `TOP <n> 0`/`RETR <n>` (for `fetchMessages`)
+ * against 3 scripted fixture messages (PRD "Incremental Sync Engine &
+ * Watermarks" §3.2/§3.6, FR-1/FR-3/FR-4/FR-8/FR-16).
+ *
+ * `supportsUidl: false` simulates a server that doesn't implement `UIDL` at
+ * all (some real-world POP3 servers reply `-ERR` to the bare command) —
+ * FR-4's `uidl_not_supported` case.
  */
 export function startFakePop3Server(opts: {
   username: string;
   password: string;
-}): Promise<FakeServerHandle> {
-  return createTlsFakeServer((socket) => {
+  supportsUidl?: boolean;
+}): Promise<FakePop3ServerHandle> {
+  const supportsUidl = opts.supportsUidl ?? true;
+  const messages = buildPop3FixtureMessages();
+
+  const messageSize = (m: Pop3FixtureMessage): number =>
+    m.headers.length + 4 + m.body.length;
+
+  const serverPromise = createTlsFakeServer((socket) => {
     socket.write("+OK POP3 fake ready\r\n");
     let userMatched = false;
+    let loggedIn = false;
 
     lineReader(socket, (line) => {
       const userMatch = /^USER\s+(\S+)\s*$/i.exec(line);
@@ -151,6 +265,7 @@ export function startFakePop3Server(opts: {
       if (passMatch) {
         const passwordMatched = passMatch[1] === opts.password;
         if (userMatched && passwordMatched) {
+          loggedIn = true;
           socket.write("+OK Logged in\r\n");
         } else {
           socket.write("-ERR authentication failed\r\n");
@@ -161,9 +276,72 @@ export function startFakePop3Server(opts: {
       if (/^QUIT\s*$/i.test(line)) {
         socket.write("+OK Goodbye\r\n");
         socket.end();
+        return;
+      }
+
+      // Everything below requires a completed login, same as a real server.
+      if (!loggedIn) return;
+
+      if (/^LIST\s*$/i.test(line)) {
+        const totalOctets = messages.reduce(
+          (sum, m) => sum + messageSize(m),
+          0,
+        );
+        socket.write(
+          `+OK ${messages.length} messages (${totalOctets} octets)\r\n`,
+        );
+        messages.forEach((m, i) => {
+          socket.write(`${i + 1} ${messageSize(m)}\r\n`);
+        });
+        socket.write(".\r\n");
+        return;
+      }
+
+      if (/^UIDL\s*$/i.test(line)) {
+        if (!supportsUidl) {
+          socket.write("-ERR\r\n");
+          return;
+        }
+        socket.write("+OK\r\n");
+        messages.forEach((m, i) => {
+          socket.write(`${i + 1} ${m.uidl}\r\n`);
+        });
+        socket.write(".\r\n");
+        return;
+      }
+
+      const topMatch = /^TOP\s+(\d+)\s+(\d+)\s*$/i.exec(line);
+      if (topMatch) {
+        const message = messages[Number(topMatch[1]) - 1];
+        if (!message) {
+          socket.write("-ERR no such message\r\n");
+          return;
+        }
+        socket.write("+OK\r\n");
+        socket.write(`${message.headers}\r\n`);
+        socket.write("\r\n");
+        socket.write(".\r\n");
+        return;
+      }
+
+      const retrMatch = /^RETR\s+(\d+)\s*$/i.exec(line);
+      if (retrMatch) {
+        const message = messages[Number(retrMatch[1]) - 1];
+        if (!message) {
+          socket.write("-ERR no such message\r\n");
+          return;
+        }
+        socket.write(`+OK ${messageSize(message)} octets\r\n`);
+        socket.write(`${message.headers}\r\n`);
+        socket.write("\r\n");
+        socket.write(`${message.body}\r\n`);
+        socket.write(".\r\n");
+        return;
       }
     });
   });
+
+  return serverPromise.then((handle) => ({ ...handle, messages }));
 }
 
 /**

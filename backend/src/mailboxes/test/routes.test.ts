@@ -52,6 +52,11 @@ type MailboxBody = {
 function fakeConnector(result: TestConnectionResult): MailboxConnector {
   return {
     testConnection: async () => result,
+    listMessageIds: async () => ({
+      ok: false,
+      reason: "not used in this test",
+    }),
+    fetchMessages: async () => ({ ok: false, reason: "not used in this test" }),
   };
 }
 
@@ -184,6 +189,14 @@ describe("POST /api/mailboxes and DELETE /api/mailboxes/:id", () => {
           called = true;
           throw new Error("should not be called");
         },
+        listMessageIds: async () => ({
+          ok: false,
+          reason: "not used in this test",
+        }),
+        fetchMessages: async () => ({
+          ok: false,
+          reason: "not used in this test",
+        }),
       }));
 
       const res = await app.request("/api/mailboxes", {
