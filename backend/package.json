@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "dev:worker": "tsx watch src/worker.ts",
+    "dev:db": "tsx src/dev-db.ts",
     "start": "tsx src/server.ts",
     "start:worker": "tsx src/worker.ts",
     "typecheck": "tsc --noEmit",

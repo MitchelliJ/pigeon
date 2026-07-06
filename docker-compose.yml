@@ -1,6 +1,6 @@
 # Pigeon single-box stack: Postgres + backend API + worker.
 # Local:      cp .env.example .env  &&  docker compose up --build
-# Production: same file on the Hetzner host; see deploy/hetzner.md.
+# Production: same file on the Hetzner host; see docs/DEPLOY_TO_HETZNER.md.
 #
 # Migrations run once as a one-shot `migrate` service before `server` and
 # `worker` start (both block on `service_completed_successfully`).

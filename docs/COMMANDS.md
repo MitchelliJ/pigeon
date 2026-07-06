@@ -3,16 +3,26 @@
 Frequently-used commands for the Pigeon monorepo. Run from the repo root
 unless noted. Requires Node 22 (`nvm use`) and pnpm 10 (≥ 10.16).
 
-See `SETUP.md` for first-time local setup and `DEPLOY.md` for the
-single-Hetzner-box production runbook.
+See `LOCAL_SETUP.md` for first-time local setup and `DEPLOY_TO_HETZNER.md` for
+the single-Hetzner-box production runbook.
 
 # Development
 
-Start the frontend (Astro, http://localhost:4321) and backend API
+Launch all three local-dev processes (Postgres, frontend+API, worker) at
+once, each in its own terminal (Windows Terminal tab if `wt.exe` is
+installed, otherwise a separate PowerShell window each):
+`pnpm dev:all`
+
+Or run them individually, in separate terminals:
+
+Local Postgres (no Docker — persists to `.pgdata/`, git-ignored):
+`pnpm dev:db`
+
+Frontend (Astro, http://localhost:4321) and backend API
 (Hono, http://localhost:8788) together, with hot reload:
 `pnpm dev`
 
-Run the background worker (separate terminal):
+Background worker:
 `pnpm dev:worker`
 
 Individual processes:
@@ -40,7 +50,7 @@ Re-running is a no-op: already-applied files are skipped. An applied
 migration id higher than anything on disk is rejected (an out-of-order
 guard — see `backend/src/migrate/runner.ts`). There are no down-migrations;
 rollbacks are constrained to restoring the `pgdata` volume from a backup or
-forward-fixing with a new corrective migration (see `DEPLOY.md`).
+forward-fixing with a new corrective migration (see `DEPLOY_TO_HETZNER.md`).
 
 `pnpm migrate` runs `backend/src/migrate/cli.ts`, which reads `DATABASE_URL`
 from the environment (validated via `backend/src/config`). In development

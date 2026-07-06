@@ -14,42 +14,42 @@ EU box** with no extra stateful services (per the spec's constraints).
 
 ### Frontend (`frontend/`)
 
-| Choice | Why |
-| --- | --- |
-| **Astro 5** | Ships mostly static HTML with islands of interactivity — fast, calm, SEO-friendly. Matches a "single calm web app" with a few dynamic panels. |
-| **SolidJS** (via `@astrojs/solid-js`) | Fine-grained reactivity for the interactive islands (dashboard, dialogs) without a heavy runtime. |
-| **Plain CSS** (`src/styles/global.css`) | No CSS framework; small surface, full control. |
-| Cookie-session API client (`src/lib/api.ts`) | Talks to the backend with `credentials: "include"`; a 401 anywhere bounces to `/login`. |
+| Choice                                       | Why                                                                                                                                           |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Astro 5**                                  | Ships mostly static HTML with islands of interactivity — fast, calm, SEO-friendly. Matches a "single calm web app" with a few dynamic panels. |
+| **SolidJS** (via `@astrojs/solid-js`)        | Fine-grained reactivity for the interactive islands (dashboard, dialogs) without a heavy runtime.                                             |
+| **Plain CSS** (`src/styles/global.css`)      | No CSS framework; small surface, full control.                                                                                                |
+| Cookie-session API client (`src/lib/api.ts`) | Talks to the backend with `credentials: "include"`; a 401 anywhere bounces to `/login`.                                                       |
 
 ### Backend (`backend/`)
 
-| Choice | Why |
-| --- | --- |
-| **Hono** + `@hono/node-server` | Tiny, fast, standards-based HTTP framework. One app for the API. |
-| **Node 22** (ESM, run via `tsx`) | Pinned runtime; `tsx` runs TypeScript directly in dev and prod — no build step for the backend. |
-| **Worker process** (`src/worker.ts`) | Separate long-running process for the durable job queue + scheduler. Same codebase, different entry point. |
+| Choice                                    | Why                                                                                                                             |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Hono** + `@hono/node-server`            | Tiny, fast, standards-based HTTP framework. One app for the API.                                                                |
+| **Node 22** (ESM, run via `tsx`)          | Pinned runtime; `tsx` runs TypeScript directly in dev and prod — no build step for the backend.                                 |
+| **Worker process** (`src/worker.ts`)      | Separate long-running process for the durable job queue + scheduler. Same codebase, different entry point.                      |
 | **Mistral** (LLM) & **Mollie** (payments) | Fixed EU-aligned external services. Both sit behind interfaces with mock/sandbox fallbacks so the app is demoable without keys. |
 
-> The backend is intentionally a **minimal runtime scaffold** today (liveness /
-> readiness + a worker heartbeat). Real modules — `db`, `queue`, `mail`, `llm`,
-> `deliver`, `quota`, `billing`, `vault`, `config` — are added **feature by
-> feature** under `backend/src/`, each with its own migrations and tests, when
-> the corresponding PRD is built. Do **not** pre-create empty module folders.
+> Real modules are added **feature by feature** under `backend/src/`, each
+> with its own migrations and tests, as the corresponding PRD is built:
+> `config`, `db`, `vault`, `mail`, `auth`, `mailboxes`, `oauth`, `sync`, and
+> `queue` (job queue + scheduler, Feature 5) all exist today. `llm` (Feature
+> 6), `deliver` (Features 7/8), `quota` (Feature 9), and `billing` (Feature 10) remain future. Do **not** pre-create empty module folders.
 
 ### Shared (`shared/`)
 
-| Choice | Why |
-| --- | --- |
+| Choice                         | Why                                                                                                                                                                                   |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@pigeon/shared` types package | Single source of truth for the API contract (`DashboardData`, `Email`, `Channel`, tiers, …). Both frontend and backend import these — **type-only**, so there is no runtime coupling. |
 
 ### Database
 
-| Choice | Why |
-| --- | --- |
-| **PostgreSQL 17** | One database for everything, including the job queue (no Redis/RabbitMQ). |
-| **Hand-written SQL, no ORM** | Explicit, reviewable, portable. Queries live next to the module that owns them. |
-| **Numbered SQL migrations** | Forward-only files (`NNNN_name.sql`) applied by an idempotent runner. |
-| **Embedded Postgres for dev/test** | Real Postgres binaries via npm (no Docker/admin needed) so tests run against the genuine engine. |
+| Choice                             | Why                                                                                                                                                                                                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **PostgreSQL 17**                  | One database for everything, including the job queue (no Redis/RabbitMQ).                                                                                                                                                                                           |
+| **Hand-written SQL, no ORM**       | Explicit, reviewable, portable. Queries live next to the module that owns them.                                                                                                                                                                                     |
+| **Numbered SQL migrations**        | Forward-only files (`NNNN_name.sql`) applied by an idempotent runner.                                                                                                                                                                                               |
+| **Embedded Postgres for dev/test** | Real Postgres binaries via npm (no Docker/admin needed) so tests run against the genuine engine; the same package also backs `pnpm dev:db`, a persistent local cluster for everyday development (see `docs/LOCAL_SETUP.md`) — Docker is not required for local dev. |
 
 ### Tooling
 
@@ -113,7 +113,13 @@ Only these three workspaces exist. New backend capability = a new folder under
 
 ### Secrets & config
 
-- **One `.env` at the repo root** (git-ignored), described by `.env.example`.
+- **One `.env` at the repo root** (git-ignored), described by `.env.example`,
+  loaded automatically at process startup by a small hand-rolled loader
+  (`backend/src/env.ts` — no `dotenv` dependency). It only fills variables not
+  already set, so real environment variables (shell exports, docker-compose's
+  `environment:` block) always win. Only ever called from an actual process
+  entrypoint (`server.ts`/`worker.ts`/`migrate/cli.ts`/`invite-cli.ts`), never
+  from anything a test imports, so it can't leak into test env-var isolation.
 - Config is **validated at startup** (Zod) and the process crashes immediately,
   naming the offending variable, when something is missing or malformed.
 - **Secrets never hit logs or the database in plaintext.** Credentials, tokens,
@@ -195,6 +201,15 @@ Only these three workspaces exist. New backend capability = a new folder under
 
 ## 5. Changelog
 
+- **06-07-2026** — `.env` is now actually loaded at startup (`backend/src/env.ts`,
+  hand-rolled, no `dotenv` dependency), wired into `server.ts`/`worker.ts`/
+  `migrate/cli.ts`/`invite-cli.ts`'s entrypoints only — never anything a test
+  imports, so test env-var isolation is untouched. Added `pnpm dev:db`
+  (`backend/src/dev-db.ts`) — a persistent embedded-Postgres cluster for local
+  dev, so Docker is no longer needed day-to-day; `docker compose` is now
+  documented as the optional, production-parity path. Updated `.env.example`
+  and `docs/LOCAL_SETUP.md` for Feature 5's three new queue/scheduler env vars
+  and the module list above.
 - **04-07-2026** — Initial coding guidelines. Restructured the repo from
   `apps/*` + `packages/*` + `tools/*` into three workspaces (`frontend`,
   `backend`, `shared`); reset the backend to a minimal runtime scaffold

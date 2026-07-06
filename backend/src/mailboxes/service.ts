@@ -16,6 +16,7 @@
 import type { Db } from "../db/index";
 import type { Vault } from "../vault/index";
 import type { MailboxConnector } from "./connectors/types";
+import { enqueueSyncJob } from "../queue/store";
 
 /** Postgres SQLSTATE for a unique-constraint violation. */
 const UNIQUE_VIOLATION_CODE = "23505";
@@ -101,6 +102,8 @@ export async function connectMailbox(
     if (!row) {
       throw new Error("connectMailbox: insert returned no row");
     }
+
+    await enqueueSyncJob(db, String(row.id));
 
     return {
       kind: "created",

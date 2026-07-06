@@ -60,6 +60,13 @@ const configSchema = z
       .int()
       .positive()
       .default(10000),
+    // How often the worker polls for claimable jobs (Job Queue, Workers &
+    // Scheduler PRD §3.2, Feature 5).
+    WORKER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+    // Max number of jobs a single worker tick claims and runs concurrently.
+    WORKER_CONCURRENCY: z.coerce.number().int().positive().default(5),
+    // How often the scheduler enqueues due sync jobs.
+    SCHEDULER_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
   })
   .superRefine((data, ctx) => {
     const requiresDatabaseUrl =
@@ -124,6 +131,9 @@ export type Config = {
   HOST: string;
   VAULT_MASTER_KEY: string;
   MAILBOX_CONNECT_TIMEOUT_MS: number;
+  WORKER_POLL_INTERVAL_MS: number;
+  WORKER_CONCURRENCY: number;
+  SCHEDULER_INTERVAL_MS: number;
 };
 
 /**
@@ -156,6 +166,9 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     // whenever parse succeeds, so it's safe to assert non-undefined here.
     VAULT_MASTER_KEY: parsed.VAULT_MASTER_KEY as string,
     MAILBOX_CONNECT_TIMEOUT_MS: parsed.MAILBOX_CONNECT_TIMEOUT_MS,
+    WORKER_POLL_INTERVAL_MS: parsed.WORKER_POLL_INTERVAL_MS,
+    WORKER_CONCURRENCY: parsed.WORKER_CONCURRENCY,
+    SCHEDULER_INTERVAL_MS: parsed.SCHEDULER_INTERVAL_MS,
   };
 }
 
@@ -208,5 +221,14 @@ export function describeConfig(
     MAILBOX_CONNECT_TIMEOUT_MS: p
       ? String(p.MAILBOX_CONNECT_TIMEOUT_MS)
       : (env.MAILBOX_CONNECT_TIMEOUT_MS ?? "not set"),
+    WORKER_POLL_INTERVAL_MS: p
+      ? String(p.WORKER_POLL_INTERVAL_MS)
+      : (env.WORKER_POLL_INTERVAL_MS ?? "not set"),
+    WORKER_CONCURRENCY: p
+      ? String(p.WORKER_CONCURRENCY)
+      : (env.WORKER_CONCURRENCY ?? "not set"),
+    SCHEDULER_INTERVAL_MS: p
+      ? String(p.SCHEDULER_INTERVAL_MS)
+      : (env.SCHEDULER_INTERVAL_MS ?? "not set"),
   };
 }

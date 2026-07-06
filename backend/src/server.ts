@@ -26,6 +26,7 @@ import { dashboardRoutes } from "./mailboxes/dashboard";
 import { oauthRoutes } from "./oauth/routes";
 import { createMailSender } from "./mail/index";
 import { createVault } from "./vault/index";
+import { loadDotEnv } from "./env";
 import type { Db } from "./db/index";
 import type { MailSender } from "./mail/index";
 import type { Vault } from "./vault/index";
@@ -69,6 +70,7 @@ export function createApp(db: Db, mail: MailSender, vault: Vault): Hono {
 const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
 
 if (isMain) {
+  loadDotEnv(); // fills process.env from the repo-root .env, if present
   const config = parseConfig(process.env); // validates env, crashes if bad (FR-12)
   const db = createDb(config.DATABASE_URL);
   const mail = createMailSender(config);

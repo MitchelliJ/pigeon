@@ -233,3 +233,65 @@ describe("parseConfig — VAULT_MASTER_KEY / MAILBOX_CONNECT_TIMEOUT_MS (FR-15..
     ).toThrowError(/MAILBOX_CONNECT_TIMEOUT_MS/);
   });
 });
+
+describe("parseConfig — queue/scheduler env vars (Feature 5)", () => {
+  it("defaults WORKER_POLL_INTERVAL_MS to 5000 when absent and coerces a provided string value to a number", () => {
+    const defaults = parseConfig({ VAULT_MASTER_KEY: TEST_VAULT_KEY });
+    expect(defaults.WORKER_POLL_INTERVAL_MS).toBe(5000);
+
+    const coerced = parseConfig({
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      WORKER_POLL_INTERVAL_MS: "1000",
+    });
+    expect(coerced.WORKER_POLL_INTERVAL_MS).toBe(1000);
+  });
+
+  it("throws a ZodError mentioning WORKER_POLL_INTERVAL_MS when it is not a number", () => {
+    expect(() =>
+      parseConfig({
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
+        WORKER_POLL_INTERVAL_MS: "not-a-number",
+      }),
+    ).toThrowError(/WORKER_POLL_INTERVAL_MS/);
+  });
+
+  it("defaults WORKER_CONCURRENCY to 5 when absent and coerces a provided string value to a number", () => {
+    const defaults = parseConfig({ VAULT_MASTER_KEY: TEST_VAULT_KEY });
+    expect(defaults.WORKER_CONCURRENCY).toBe(5);
+
+    const coerced = parseConfig({
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      WORKER_CONCURRENCY: "1000",
+    });
+    expect(coerced.WORKER_CONCURRENCY).toBe(1000);
+  });
+
+  it("throws a ZodError mentioning WORKER_CONCURRENCY when it is not a number", () => {
+    expect(() =>
+      parseConfig({
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
+        WORKER_CONCURRENCY: "not-a-number",
+      }),
+    ).toThrowError(/WORKER_CONCURRENCY/);
+  });
+
+  it("defaults SCHEDULER_INTERVAL_MS to 60000 when absent and coerces a provided string value to a number", () => {
+    const defaults = parseConfig({ VAULT_MASTER_KEY: TEST_VAULT_KEY });
+    expect(defaults.SCHEDULER_INTERVAL_MS).toBe(60000);
+
+    const coerced = parseConfig({
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      SCHEDULER_INTERVAL_MS: "1000",
+    });
+    expect(coerced.SCHEDULER_INTERVAL_MS).toBe(1000);
+  });
+
+  it("throws a ZodError mentioning SCHEDULER_INTERVAL_MS when it is not a number", () => {
+    expect(() =>
+      parseConfig({
+        VAULT_MASTER_KEY: TEST_VAULT_KEY,
+        SCHEDULER_INTERVAL_MS: "not-a-number",
+      }),
+    ).toThrowError(/SCHEDULER_INTERVAL_MS/);
+  });
+});

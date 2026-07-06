@@ -136,6 +136,12 @@ describe("POST /api/mailboxes and DELETE /api/mailboxes/:id", () => {
       const ciphertext = String(rows[0]?.password_ciphertext);
       expect(ciphertext).not.toBe("app-password-123");
       expect(vault.open(ciphertext)).toBe("app-password-123");
+
+      const jobRows = await db.query`
+        SELECT status FROM jobs
+        WHERE type = 'sync_mailbox' AND payload->>'mailboxId' = ${body.mailbox.id}
+      `;
+      expect(jobRows).toEqual([{ status: "pending" }]);
     } finally {
       await close();
     }

@@ -9,6 +9,8 @@
     "dev:frontend": "pnpm --filter @pigeon/frontend dev",
     "dev:backend": "pnpm --filter @pigeon/backend dev",
     "dev:worker": "pnpm --filter @pigeon/backend dev:worker",
+    "dev:db": "pnpm --filter @pigeon/backend dev:db",
+    "dev:all": "powershell -ExecutionPolicy Bypass -File scripts/dev-all.ps1",
     "build": "pnpm --filter @pigeon/frontend build",
     "preview": "pnpm --filter @pigeon/frontend preview",
     "typecheck": "pnpm -r typecheck",

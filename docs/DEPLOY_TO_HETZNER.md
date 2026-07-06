@@ -2,8 +2,7 @@
 
 Pigeon is designed for one machine: the app, the worker, and the database all
 run together, with no extra stateful services. This is the production runbook;
-for local development see `SETUP.md`. (The short pointer in `deploy/hetzner.md`
-links here.)
+for local development see `LOCAL_SETUP.md`.
 
 ## Target
 
@@ -58,7 +57,7 @@ Verify:
 ```sh
 docker compose ps                       # db healthy, server/worker Up, migrate Exited (0)
 curl localhost:8788/readyz               # {"ok":true} when the DB is reachable
-docker compose logs -f worker           # periodic heartbeats
+docker compose logs -f worker           # heartbeats + scheduler/job-queue tick activity
 ```
 
 ## Edge / TLS
@@ -135,12 +134,16 @@ feature; for now, alert on:
 
 - `readyz` returning 503 for >1m (DB or API down),
 - the `worker` not heartbeating for several intervals,
+- repeated `[scheduler] tick failed`/`[worker] tick failed` lines in the
+  worker's logs (a single failure is caught and logged, not fatal, but a
+  repeating pattern means something's actually broken),
 - the `migrate` one-shot exiting non-zero on an update.
 
 ## Local parity
 
-The same `docker-compose.yml` runs locally (see `SETUP.md` → "Containerized
-stack"), so a `docker compose up --build` on your laptop exercises the same
+The same `docker-compose.yml` runs locally (see `LOCAL_SETUP.md` →
+"Containerized stack"), so a `docker compose up --build` on your laptop
+exercises the same
 migrate-then-serve flow prod uses. CI (`pnpm test`) exercises the migration
 runner and CLI against an embedded Postgres, and the `image` job builds this
 same Dockerfile.

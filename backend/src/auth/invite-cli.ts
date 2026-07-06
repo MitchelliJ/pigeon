@@ -18,6 +18,7 @@ import type { Db } from "../db/index";
 import { parseConfig } from "../config/index";
 import { createDb } from "../db/index";
 import { generateInviteCode, hashToken } from "./tokens";
+import { loadDotEnv } from "../env";
 
 const DURATION_UNIT_MS: Record<string, number> = {
   s: 1000,
@@ -126,5 +127,6 @@ export async function main(args: string[]): Promise<number> {
 const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
 
 if (isMain) {
+  loadDotEnv(); // fills process.env from the repo-root .env, if present
   main(process.argv.slice(2)).then((code) => process.exit(code));
 }
