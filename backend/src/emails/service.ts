@@ -21,6 +21,19 @@
 import type { Db } from "../db/index";
 import type { Category, Email } from "@pigeon/shared";
 
+/**
+ * Thrown by `loadEmailPage` when the `cursor` query param can't be decoded
+ * into a valid keyset position (not base64, not JSON, wrong shape, or an
+ * unparseable timestamp). The route layer maps it to a `400 invalid_cursor`
+ * instead of letting a malformed cursor crash into a 500.
+ */
+export class InvalidCursorError extends Error {
+  constructor() {
+    super("invalid cursor");
+    this.name = "InvalidCursorError";
+  }
+}
+
 /** Every category starts at 0 so the returned map always has all three keys. */
 const EMPTY_COUNTS: Record<Category, number> = {
   requires_action: 0,
@@ -63,11 +76,30 @@ function encodeCursor(position: CursorPosition): string {
   return Buffer.from(JSON.stringify(position)).toString("base64");
 }
 
-/** Decode an opaque base64 cursor token back into its keyset position. */
+/**
+ * Decode an opaque base64 cursor token back into its keyset position. The
+ * cursor is attacker-supplied (it rides in on the query string), so every
+ * failure mode — bad base64, bad JSON, missing/typed-wrong fields, or a
+ * `receivedAt` that isn't a real timestamp — becomes an `InvalidCursorError`
+ * rather than a thrown `SyntaxError` or a downstream Postgres cast error.
+ */
 function decodeCursor(cursor: string): CursorPosition {
-  return JSON.parse(
-    Buffer.from(cursor, "base64").toString("utf8"),
-  ) as CursorPosition;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64").toString("utf8"));
+  } catch {
+    throw new InvalidCursorError();
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    typeof (parsed as CursorPosition).receivedAt !== "string" ||
+    typeof (parsed as CursorPosition).id !== "string" ||
+    Number.isNaN(Date.parse((parsed as CursorPosition).receivedAt))
+  ) {
+    throw new InvalidCursorError();
+  }
+  return parsed as CursorPosition;
 }
 
 /** Shape a raw `emails` row (joined to its mailbox) into the shared `Email`. */

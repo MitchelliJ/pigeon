@@ -14,6 +14,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireAuth } from "../auth/middleware";
+import { bodyLimit } from "../http/limits";
 import { getConnector } from "./connectors/index";
 import { connectMailbox, removeMailbox } from "./service";
 import type { Context } from "hono";
@@ -83,6 +84,9 @@ export function mailboxesRoutes(
   ) => MailboxConnector = getConnector,
 ): Hono<{ Variables: AuthVariables }> {
   const app = new Hono<{ Variables: AuthVariables }>();
+
+  // Cap request bodies (the connect payload is small JSON) before parsing.
+  app.use("*", bodyLimit(64 * 1024));
 
   app.post("/api/mailboxes", requireAuth(db), async (c) => {
     const body = await readJsonBody(c);

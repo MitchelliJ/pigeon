@@ -25,6 +25,7 @@ export async function handleSyncMailboxJob(
   getConnectorFn: (
     protocol: "imap" | "pop3",
   ) => MailboxConnector = getConnector,
+  connectTimeoutMs?: number,
 ): Promise<void> {
   const rows = await db.query`
     SELECT protocol FROM mailboxes WHERE id = ${payload.mailboxId}`;
@@ -37,7 +38,13 @@ export async function handleSyncMailboxJob(
   }
 
   const connector = getConnectorFn(row.protocol);
-  const result = await syncMailbox(db, vault, connector, payload.mailboxId);
+  const result = await syncMailbox(
+    db,
+    vault,
+    connector,
+    payload.mailboxId,
+    connectTimeoutMs,
+  );
   if (!result.ok) {
     throw new Error(result.reason);
   }

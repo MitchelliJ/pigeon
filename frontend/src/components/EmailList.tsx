@@ -1,15 +1,17 @@
 import type { JSX } from "solid-js";
 import {
+  createEffect,
   createMemo,
   createSignal,
   For,
   Match,
+  on,
   onCleanup,
   onMount,
   Switch,
   untrack,
 } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createStore, reconcile } from "solid-js/store";
 import type { Email, EmailAccount } from "@pigeon/shared";
 import { CATEGORY_ORDER } from "@pigeon/shared";
 import { fetchEmails } from "../lib/api";
@@ -77,6 +79,58 @@ export default function EmailList(props: {
     noise: emptyState(),
   });
 
+  // Which rows are expanded, tracked here (keyed by email id) rather than
+  // inside each EmailRow, so expansion survives the reconcile fold below: a row
+  // that stays present keeps its DOM and its expanded state across a poll.
+  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(new Set());
+  function toggleExpanded(id: string): void {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // The list container, so the fold can tell when the user is actively
+  // keyboard-navigating inside it (focus within) and hold off.
+  let listEl: HTMLDivElement | undefined;
+
+  // Background dashboard polls hand us a fresh first page via `props.emails`
+  // (the dashboard stays mounted across refreshes, so the seed above only ever
+  // runs once). Fold each new page into the default tab: reconcile keyed by id
+  // leaves unchanged rows' DOM — and their expanded state — untouched.
+  //
+  // The fold is held off while the user is mid-interaction with this tab, so a
+  // poll never yanks the list out from under them:
+  //  - a fetch is in flight;
+  //  - they've paged deeper (replacing pages 2+ with page 1 would jump scroll);
+  //  - a row is expanded (reconcile could remove the very row being read if a
+  //    newer email pushed it off the fresh first page);
+  //  - focus is inside the list (a keyboard user navigating rows).
+  // In all those cases we skip this poll's data and fold the next one instead.
+  //
+  // Cursor semantics after the swap match the seed's: a full page leaves the
+  // tab uninitialized so the first scroll learns the real cursor, a short page
+  // means the category is exhausted.
+  createEffect(
+    on(
+      () => props.emails,
+      (emails) => {
+        const s = store.requires_action;
+        if (s.loading || s.emails.length > PAGE_SIZE) return;
+        if (expandedIds().size > 0) return;
+        if (listEl && listEl.contains(document.activeElement)) return;
+        setStore("requires_action", "emails", reconcile(emails, { key: "id" }));
+        setStore("requires_action", {
+          nextCursor: null,
+          initialized: emails.length < PAGE_SIZE,
+        });
+      },
+      { defer: true },
+    ),
+  );
+
   const active = (): CategoryState => store[filter()];
 
   const accountById = createMemo(() => {
@@ -93,14 +147,19 @@ export default function EmailList(props: {
       .sort((a, b) => CATEGORY_ORDER[b.category] - CATEGORY_ORDER[a.category]),
   );
 
-  /** Fetch page 1 fresh, replacing whatever the category holds. */
+  /** Fetch page 1 fresh, reconciling it over whatever the category holds. */
   async function loadFirstPage(category: Filter): Promise<void> {
     if (store[category].loading) return;
     setStore(category, "loading", true);
     try {
       const page = await fetchEmails(category);
+      // Reconcile (not replace) by id so rows unchanged since the last fetch
+      // keep their DOM and expanded state. This path re-runs on the default tab
+      // whenever a full first page re-arms `initialized = false` and the user
+      // scrolls to learn the cursor, so a plain array-replace here would wipe
+      // row identity across the whole tab on every such refresh.
+      setStore(category, "emails", reconcile(page.emails, { key: "id" }));
       setStore(category, {
-        emails: page.emails,
         nextCursor: page.nextCursor,
         initialized: true,
         loading: false,
@@ -190,7 +249,7 @@ export default function EmailList(props: {
       </div>
 
       {/* table */}
-      <div class="email-table">
+      <div class="email-table" ref={(el) => (listEl = el)}>
         <Switch>
           <Match when={visible().length > 0}>
             <For each={visible()}>
@@ -199,6 +258,8 @@ export default function EmailList(props: {
                   email={email}
                   account={accountById().get(email.accountId)}
                   index={i()}
+                  expanded={expandedIds().has(email.id)}
+                  onToggle={() => toggleExpanded(email.id)}
                 />
               )}
             </For>

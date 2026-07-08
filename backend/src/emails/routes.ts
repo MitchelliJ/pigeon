@@ -17,7 +17,7 @@
  */
 import { Hono } from "hono";
 import { requireAuth } from "../auth/middleware";
-import { loadEmailPage } from "./service";
+import { InvalidCursorError, loadEmailPage } from "./service";
 import type { AuthVariables } from "../auth/middleware";
 import type { Db } from "../db/index";
 import type { Category } from "@pigeon/shared";
@@ -68,15 +68,21 @@ export function emailsRoutes(db: Db): Hono<{ Variables: AuthVariables }> {
     const cursor = c.req.query("cursor");
     const limit = parseLimit(c.req.query("limit"));
 
-    const { emails, nextCursor } = await loadEmailPage(
-      db,
-      sessionUser.id,
-      category,
-      cursor,
-      limit,
-    );
-
-    return c.json({ emails, nextCursor }, 200);
+    try {
+      const { emails, nextCursor } = await loadEmailPage(
+        db,
+        sessionUser.id,
+        category,
+        cursor,
+        limit,
+      );
+      return c.json({ emails, nextCursor }, 200);
+    } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        return c.json({ error: "invalid cursor", code: "invalid_cursor" }, 400);
+      }
+      throw err;
+    }
   });
 
   return app;

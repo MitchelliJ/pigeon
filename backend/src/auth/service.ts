@@ -68,6 +68,33 @@ export type SignupResult =
  */
 type AuthTokenKind = "verify_email" | "reset_password";
 
+/** Postgres SQLSTATE for a unique-constraint violation (e.g. `users.email`). */
+const UNIQUE_VIOLATION_CODE = "23505";
+
+/** Narrow an unknown thrown value to "was this a 23505 from postgres.js?" */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === UNIQUE_VIOLATION_CODE
+  );
+}
+
+/**
+ * Internal sentinel used to roll a `withTx` block back to a *specific*
+ * caller-visible outcome rather than a 500. Thrown inside verify/reset when a
+ * compare-and-swap loses (token already consumed, or the invite was already
+ * claimed by another account) so the whole transaction unwinds, then caught at
+ * the call site and mapped to `invalid_or_expired_token`.
+ */
+class TokenRaceLost extends Error {
+  constructor() {
+    super("token or invite already consumed");
+    this.name = "TokenRaceLost";
+  }
+}
+
 /**
  * Mint a fresh `kind` token for `userId` via `tx`, valid for `ttlMs`. Returns
  * the plaintext token (only its hash is persisted). Used directly wherever
@@ -180,22 +207,25 @@ export async function signup(
 
   const passwordHash = hashPassword(input.password);
 
-  const verifyToken = existingUser
-    ? await db.withTx(async (tx) => {
-        await tx`
-          UPDATE users
-          SET password_hash = ${passwordHash}, name = ${input.name},
-              pending_invite_code_hash = ${invite.code_hash}
-          WHERE id = ${existingUser.id}
-        `;
-        return voidOutstandingAndMint(
-          tx,
-          existingUser.id,
-          "verify_email",
-          VERIFY_TOKEN_TTL_MS,
-        );
-      })
-    : await db.withTx(async (tx) => {
+  let verifyToken: string;
+  if (existingUser) {
+    verifyToken = await db.withTx(async (tx) => {
+      await tx`
+        UPDATE users
+        SET password_hash = ${passwordHash}, name = ${input.name},
+            pending_invite_code_hash = ${invite.code_hash}
+        WHERE id = ${existingUser.id}
+      `;
+      return voidOutstandingAndMint(
+        tx,
+        existingUser.id,
+        "verify_email",
+        VERIFY_TOKEN_TTL_MS,
+      );
+    });
+  } else {
+    try {
+      verifyToken = await db.withTx(async (tx) => {
         const inserted = await tx`
           INSERT INTO users (email, password_hash, name, pending_invite_code_hash)
           VALUES (${input.email}, ${passwordHash}, ${input.name}, ${invite.code_hash})
@@ -204,6 +234,17 @@ export async function signup(
         const userId = inserted[0]?.id;
         return mintToken(tx, userId, "verify_email", VERIFY_TOKEN_TTL_MS);
       });
+    } catch (err) {
+      // Two signups racing the same brand-new email both pass the `existing`
+      // check above, then race this INSERT; the loser hits the `users.email`
+      // unique constraint. Map it to the same `email_taken` result an
+      // already-verified email gets, instead of leaking a raw 500 (FR-5).
+      if (isUniqueViolation(err)) {
+        return { kind: "email_taken" };
+      }
+      throw err;
+    }
+  }
 
   await sendVerifyEmail(mail, config, input.email, verifyToken);
   return { kind: "verify_email_sent" };
@@ -275,33 +316,62 @@ export async function verify(
     return { kind: "invalid_or_expired_token" };
   }
 
-  const { user, sessionToken } = await db.withTx(async (tx) => {
-    const users = await tx`
-      UPDATE users SET email_verified_at = now()
-      WHERE id = ${tokenRow.user_id}
-      RETURNING id, email, name, tier, pending_invite_code_hash
-    `;
-    const updatedUser = users[0];
-    if (!updatedUser) {
-      throw new Error(`verify: no user for id ${String(tokenRow.user_id)}`);
-    }
-
-    await tx`
-      UPDATE auth_tokens SET consumed_at = now() WHERE id = ${tokenRow.id}
-    `;
-
-    // Consume the invite presented at sign-up, tracked via the user row's
-    // pending_invite_code_hash (FR-10) — not consumed until verify succeeds.
-    if (updatedUser.pending_invite_code_hash) {
-      await tx`
-        UPDATE invites SET consumed_at = now()
-        WHERE code_hash = ${updatedUser.pending_invite_code_hash}
+  let txResult: { user: Record<string, unknown>; sessionToken: string };
+  try {
+    txResult = await db.withTx(async (tx) => {
+      // Consume the token as a compare-and-swap: only the caller that flips
+      // `consumed_at` from NULL proceeds. A second concurrent request with the
+      // same token (e.g. an email-security scanner prefetching the link, then
+      // the real user clicking it) loses here and gets no session — the token
+      // is genuinely single-use, not "single-use unless raced".
+      const consumed = await tx`
+        UPDATE auth_tokens SET consumed_at = now()
+        WHERE id = ${tokenRow.id} AND consumed_at IS NULL
+        RETURNING id
       `;
-    }
+      if (consumed.length === 0) {
+        throw new TokenRaceLost();
+      }
 
-    const newSessionToken = await createSession(tx, String(updatedUser.id));
-    return { user: updatedUser, sessionToken: newSessionToken };
-  });
+      const users = await tx`
+        UPDATE users SET email_verified_at = now()
+        WHERE id = ${tokenRow.user_id}
+        RETURNING id, email, name, tier, pending_invite_code_hash
+      `;
+      const updatedUser = users[0];
+      if (!updatedUser) {
+        throw new Error(`verify: no user for id ${String(tokenRow.user_id)}`);
+      }
+
+      // Consume the invite presented at sign-up (FR-10) — atomically, and only
+      // if it hasn't already been claimed. The invite is checked (not consumed)
+      // at signup, so N accounts can be signed up against one invite before any
+      // verifies; whichever account verifies first claims it here, and every
+      // later verify finds it already consumed and is rejected. Without this
+      // compare-and-swap, one invite could mint unlimited verified accounts.
+      if (updatedUser.pending_invite_code_hash) {
+        const claimedInvite = await tx`
+          UPDATE invites SET consumed_at = now()
+          WHERE code_hash = ${updatedUser.pending_invite_code_hash}
+            AND consumed_at IS NULL
+          RETURNING id
+        `;
+        if (claimedInvite.length === 0) {
+          throw new TokenRaceLost();
+        }
+      }
+
+      const newSessionToken = await createSession(tx, String(updatedUser.id));
+      return { user: updatedUser, sessionToken: newSessionToken };
+    });
+  } catch (err) {
+    if (err instanceof TokenRaceLost) {
+      return { kind: "invalid_or_expired_token" };
+    }
+    throw err;
+  }
+
+  const { user, sessionToken } = txResult;
 
   const sessionUser: SessionUser = {
     id: String(user.id),
@@ -606,15 +676,31 @@ export async function resetPassword(
   }
 
   const passwordHash = hashPassword(newPassword);
-  await db.withTx(async (tx) => {
-    await tx`
-      UPDATE users SET password_hash = ${passwordHash} WHERE id = ${tokenRow.user_id}
-    `;
-    await tx`
-      UPDATE auth_tokens SET consumed_at = now() WHERE id = ${tokenRow.id}
-    `;
-    await revokeAllSessions(tx, tokenRow.user_id);
-  });
+  try {
+    await db.withTx(async (tx) => {
+      // Consume the token as a compare-and-swap, same reasoning as `verify`:
+      // two requests presenting the same reset token can both pass the SELECT
+      // above, but only the one that flips `consumed_at` from NULL here may
+      // proceed — so a single reset link can't set the password twice.
+      const consumed = await tx`
+        UPDATE auth_tokens SET consumed_at = now()
+        WHERE id = ${tokenRow.id} AND consumed_at IS NULL
+        RETURNING id
+      `;
+      if (consumed.length === 0) {
+        throw new TokenRaceLost();
+      }
+      await tx`
+        UPDATE users SET password_hash = ${passwordHash} WHERE id = ${tokenRow.user_id}
+      `;
+      await revokeAllSessions(tx, tokenRow.user_id);
+    });
+  } catch (err) {
+    if (err instanceof TokenRaceLost) {
+      return { kind: "invalid_or_expired_token" };
+    }
+    throw err;
+  }
 
   return { kind: "reset" };
 }

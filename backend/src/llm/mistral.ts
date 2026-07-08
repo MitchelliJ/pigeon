@@ -23,6 +23,13 @@ import type {
 
 const MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions";
 
+/** The closed set of triage categories the model is allowed to return. */
+const VALID_CATEGORIES: readonly ClassificationResult["category"][] = [
+  "requires_action",
+  "important",
+  "noise",
+];
+
 /** The `{{...}}` marker in `prompt.md` we swap for the user's override. */
 const INSTRUCTIONS_PLACEHOLDER = "{{CLASSIFICATION_INSTRUCTIONS}}";
 
@@ -143,6 +150,20 @@ export function createMistralClassifier(
             return {
               ok: false,
               reason: "Mistral response is missing summary or category",
+            };
+          }
+          // Validate the category against the closed enum rather than casting
+          // blindly: an unexpected value would otherwise reach the DB and trip
+          // the `emails.category` CHECK constraint, surfacing as an opaque
+          // constraint-violation job failure instead of a clear reason.
+          if (
+            !VALID_CATEGORIES.includes(
+              parsed.category as ClassificationResult["category"],
+            )
+          ) {
+            return {
+              ok: false,
+              reason: `Mistral returned an unexpected category: ${parsed.category}`,
             };
           }
           return {

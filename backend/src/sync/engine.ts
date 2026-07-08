@@ -59,6 +59,7 @@ export async function syncMailbox(
   vault: Vault,
   connector: MailboxConnector,
   mailboxId: string,
+  connectTimeoutMs?: number,
 ): Promise<SyncResult> {
   const rows = await db.query`
     SELECT host, port, tls, username, password_ciphertext, last_synced_at
@@ -74,6 +75,11 @@ export async function syncMailbox(
     tls: row.tls,
     username: row.username,
     password: vault.open(row.password_ciphertext),
+    // Honor the operator-configured MAILBOX_CONNECT_TIMEOUT_MS on the
+    // background-sync path (threaded down from the worker); without this the
+    // IMAP connector applies no explicit timeout at all and a hung server
+    // stalls the job until imapflow's own internal defaults fire.
+    ...(connectTimeoutMs !== undefined ? { connectTimeoutMs } : {}),
   };
 
   await db.query`

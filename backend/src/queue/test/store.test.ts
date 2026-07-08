@@ -341,9 +341,12 @@ describe("queue store", () => {
         userId,
         "complete-mb@example.com",
       );
-      const jobId = await insertJob(db, mailboxId, { status: "running" });
+      const jobId = await insertJob(db, mailboxId, {
+        status: "running",
+        attempts: 1,
+      });
 
-      await completeJob(db, jobId);
+      await completeJob(db, jobId, 1);
 
       const rows = await db.query`SELECT status FROM jobs WHERE id = ${jobId}`;
       expect(rows).toEqual([{ status: "succeeded" }]);
@@ -368,7 +371,7 @@ describe("queue store", () => {
         maxAttempts: 3,
       });
 
-      await failJob(db, jobId, "boom");
+      await failJob(db, jobId, "boom", 1, 3);
 
       const rows = await db.query`
         SELECT status, run_at, last_error FROM jobs WHERE id = ${jobId}`;
@@ -400,7 +403,7 @@ describe("queue store", () => {
         maxAttempts: 3,
       });
 
-      await failJob(db, jobId, "boom again");
+      await failJob(db, jobId, "boom again", 2, 3);
 
       const rows = await db.query`
         SELECT status, run_at FROM jobs WHERE id = ${jobId}`;
@@ -432,7 +435,7 @@ describe("queue store", () => {
         maxAttempts: 3,
       });
 
-      await failJob(db, jobId, "final failure");
+      await failJob(db, jobId, "final failure", 3, 3);
 
       const rows = await db.query`SELECT status FROM jobs WHERE id = ${jobId}`;
       expect(rows).toEqual([{ status: "failed" }]);

@@ -59,8 +59,13 @@ type Negotiate<TResult extends ConnectorResult> = (
 
 /**
  * Open a TLS socket to `params.host:params.port` and run `negotiate` once
- * connected, under a single timeout covering connect *and* the whole
- * protocol exchange (FR-5). Never throws: connect errors, TLS
+ * connected. The timeout is an *inactivity* timeout (FR-5): it bounds the
+ * initial connect and then any stretch of silence during the protocol
+ * exchange, resetting on every received byte. This is deliberately not a
+ * single deadline over the whole call — a POP3 `RETR` loop across many
+ * messages legitimately takes longer than the connect budget, and a fixed
+ * deadline would abort a healthy, actively-transferring connection midway
+ * and mislabel it "could not reach host". Never throws: connect errors, TLS
  * certificate-validation failures, and timeouts all resolve
  * `{ ok: false, reason }` instead of rejecting/throwing.
  */
@@ -76,9 +81,11 @@ export function testTlsConnection<
   // with (see `ConnectorResult` above) — the cast just tells TypeScript what
   // every caller already guarantees structurally.
   const unreachableResult = { ok: false, reason: unreachableReason } as TResult;
+  const timeoutMs = params.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
 
   return new Promise((resolve) => {
     let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
     const settle = (result: TResult): void => {
       if (settled) return;
       settled = true;
@@ -86,10 +93,14 @@ export function testTlsConnection<
       socket.destroy();
       resolve(result);
     };
-
-    const timer = setTimeout(() => {
-      settle(unreachableResult);
-    }, params.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
+    // (Re)arm the inactivity timer — called at connect and again on every
+    // inbound chunk, so only a genuine stall (no bytes for `timeoutMs`) trips
+    // it, never a slow-but-progressing transfer.
+    const armTimer = (): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => settle(unreachableResult), timeoutMs);
+    };
+    armTimer();
 
     const socket = tlsConnect({
       host,
@@ -100,6 +111,8 @@ export function testTlsConnection<
       // code path — never disabled, per FR-5.
       ca: params.caCert,
     });
+
+    socket.on("data", armTimer);
 
     socket.on("error", (err: NodeJS.ErrnoException) => {
       // A cert-validation failure is the operator's only signal that a

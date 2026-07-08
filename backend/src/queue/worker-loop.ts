@@ -25,6 +25,7 @@ export async function runWorkerTick(
     protocol: "imap" | "pop3",
   ) => MailboxConnector = getConnector,
   classifier: LlmClassifier = mockLlmClassifier,
+  connectTimeoutMs?: number,
 ): Promise<void> {
   const jobs = await claimJobs(db, concurrency);
 
@@ -36,6 +37,7 @@ export async function runWorkerTick(
           vault,
           job.payload as { mailboxId: string },
           getConnectorFn,
+          connectTimeoutMs,
         );
       case "summarize_classify":
         return handleSummarizeClassifyJob(
@@ -58,10 +60,10 @@ export async function runWorkerTick(
     jobs.map(async (job) => {
       try {
         await dispatch(job);
-        await completeJob(db, job.id);
+        await completeJob(db, job.id, job.attempts);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        await failJob(db, job.id, message);
+        await failJob(db, job.id, message, job.attempts, job.maxAttempts);
       }
     }),
   );

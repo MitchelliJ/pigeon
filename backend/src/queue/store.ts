@@ -116,10 +116,22 @@ export async function claimJobs(db: Db, limit: number): Promise<Job[]> {
   return rows.map(toJob);
 }
 
-/** Mark `jobId` as succeeded (FR-4). */
-export async function completeJob(db: Db, jobId: string): Promise<void> {
+/**
+ * Mark `jobId` as succeeded (FR-4), fenced on the caller's claim. `claimJobs`
+ * bumps `attempts` on every claim, so the attempts value an executor received
+ * is a fencing token: if the job was reclaimed after the visibility timeout
+ * (FR-9) it now holds a *higher* attempts, and this stale update matches no
+ * row. Without the fence, a slow-then-recovered original execution could
+ * overwrite the state of the newer execution that reclaimed the same job.
+ */
+export async function completeJob(
+  db: Db,
+  jobId: string,
+  claimedAttempts: number,
+): Promise<void> {
   await db.query`
-    UPDATE jobs SET status = 'succeeded', updated_at = now() WHERE id = ${jobId}
+    UPDATE jobs SET status = 'succeeded', updated_at = now()
+    WHERE id = ${jobId} AND status = 'running' AND attempts = ${claimedAttempts}
   `;
 }
 
@@ -128,37 +140,40 @@ export async function completeJob(db: Db, jobId: string): Promise<void> {
  * otherwise dead-letter it (`status = 'failed'`) and print a single
  * `console.error` line so a permanently failed job is at least visible in the
  * worker's own logs (FR-19) — the next scheduler tick re-attempts on its own.
+ *
+ * Fenced on the caller's claim exactly like `completeJob`: the retry/dead-letter
+ * decision is driven by the `claimedAttempts`/`maxAttempts` the executor was
+ * handed, and every write is guarded by `attempts = ${claimedAttempts} AND
+ * status = 'running'` so a job already reclaimed (and possibly succeeded) by a
+ * newer execution is never dragged back to `pending`.
  */
 export async function failJob(
   db: Db,
   jobId: string,
   error: string,
+  claimedAttempts: number,
+  maxAttempts: number,
 ): Promise<void> {
-  const rows = (await db.query`
-    SELECT attempts, max_attempts, payload FROM jobs WHERE id = ${jobId}
-  `) as unknown as Array<Pick<JobRow, "attempts" | "max_attempts" | "payload">>;
-  const row = rows[0];
-  if (!row) {
-    return;
-  }
-
-  if (row.attempts < row.max_attempts) {
-    const backoff = backoffFor(row.attempts);
+  if (claimedAttempts < maxAttempts) {
+    const backoff = backoffFor(claimedAttempts);
     await db.query`
       UPDATE jobs
       SET status = 'pending', run_at = now() + ${backoff}::interval,
           last_error = ${error}, updated_at = now()
-      WHERE id = ${jobId}
+      WHERE id = ${jobId} AND status = 'running' AND attempts = ${claimedAttempts}
     `;
     return;
   }
 
-  await db.query`
+  const rows = (await db.query`
     UPDATE jobs
     SET status = 'failed', last_error = ${error}, updated_at = now()
-    WHERE id = ${jobId}
-  `;
-  console.error(
-    `[queue] job ${jobId} dead-lettered after ${String(row.attempts)} attempts (mailboxId=${String(row.payload.mailboxId)}): ${error}`,
-  );
+    WHERE id = ${jobId} AND status = 'running' AND attempts = ${claimedAttempts}
+    RETURNING id
+  `) as unknown as Array<Pick<JobRow, "id">>;
+  if (rows.length > 0) {
+    console.error(
+      `[queue] job ${jobId} dead-lettered after ${String(claimedAttempts)} attempts: ${error}`,
+    );
+  }
 }

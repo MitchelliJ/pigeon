@@ -1,5 +1,5 @@
 import type { JSX } from "solid-js";
-import { createSignal, Show } from "solid-js";
+import { Show } from "solid-js";
 import type { Email, EmailAccount } from "@pigeon/shared";
 import {
   avatarColor,
@@ -13,25 +13,26 @@ export default function EmailRow(props: {
   email: Email;
   account: EmailAccount | undefined;
   index: number;
+  // Expansion is controlled by the parent (keyed by email id) so it survives
+  // the list's background reconcile — see EmailList's `expandedIds`.
+  expanded: boolean;
+  onToggle: () => void;
 }): JSX.Element {
   const email = () => props.email;
-  const [expanded, setExpanded] = createSignal(false);
-
-  const toggle = () => setExpanded((v) => !v);
 
   return (
     <article
       class={`email ${email().category} rise`}
-      classList={{ expanded: expanded() }}
+      classList={{ expanded: props.expanded }}
       style={{ "animation-delay": `${Math.min(props.index * 45, 300)}ms` }}
       role="button"
       tabindex={0}
-      aria-expanded={expanded()}
-      onClick={toggle}
+      aria-expanded={props.expanded}
+      onClick={() => props.onToggle()}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          toggle();
+          props.onToggle();
         }
       }}
     >
@@ -73,7 +74,7 @@ export default function EmailRow(props: {
           <em>{email().summary}</em>
         </p>
 
-        <Show when={expanded()}>
+        <Show when={props.expanded}>
           <div class="email-full">{email().body}</div>
         </Show>
       </div>

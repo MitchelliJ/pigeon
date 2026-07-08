@@ -36,6 +36,7 @@ import {
   verify,
 } from "./service";
 import { csrfGuard, requireAuth } from "./middleware";
+import { bodyLimit, rateLimit } from "../http/limits";
 import type { Context } from "hono";
 import type { AuthVariables } from "./middleware";
 import type { Db } from "../db/index";
@@ -43,19 +44,22 @@ import type { MailSender } from "../mail/index";
 
 const DEFAULT_APP_BASE_URL = "http://localhost:4321";
 
+/**
+ * `Secure` is added in production so the session cookie is never transmitted
+ * over plain HTTP; dev/test run over http://localhost, where `Secure` would
+ * stop the cookie from being set at all.
+ */
+const SECURE_ATTR = process.env.NODE_ENV === "production" ? "; Secure" : "";
+
 /** Clear the session cookie a login/verify previously set (FR-19: logout). */
-const CLEAR_SESSION_COOKIE =
-  "pigeon_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
+const CLEAR_SESSION_COOKIE = `pigeon_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE_ATTR}`;
 
 /**
  * Build the `Set-Cookie` value that starts a session, shared by login's and
  * verify's success paths (both mint a session the same way).
- *
- * FR-17: no `Secure` flag yet — this feature runs in dev/test only so far. A
- * later slice makes it conditional on NODE_ENV==='production'.
  */
 function sessionCookie(sessionToken: string): string {
-  return `pigeon_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/`;
+  return `pigeon_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/${SECURE_ATTR}`;
 }
 
 /**
@@ -82,6 +86,17 @@ export function authRoutes(
   // FR-33/FR-34, AC-9: reject cross-origin requests before any route logic
   // (including requireAuth on /logout) runs.
   const csrf = csrfGuard(appBaseUrl);
+
+  // Cap request bodies on every auth route (all take small JSON payloads) so an
+  // oversized body can't be buffered/parsed as a cheap DoS on these
+  // unauthenticated endpoints.
+  app.use("*", bodyLimit(64 * 1024));
+
+  // Throttle login by IP: each attempt runs a deliberately expensive scrypt
+  // verification, so without a limit `POST /api/auth/login` is both a
+  // brute-force surface and a CPU-exhaustion DoS. 10 attempts/minute is roomy
+  // for a human fat-fingering a password but chokes automated guessing.
+  const loginRateLimit = rateLimit({ max: 10, windowMs: 60_000 });
 
   app.post("/api/auth/signup", csrf, async (c) => {
     const body = await readJsonBody(c);
@@ -154,7 +169,7 @@ export function authRoutes(
     }
   });
 
-  app.post("/api/auth/login", csrf, async (c) => {
+  app.post("/api/auth/login", loginRateLimit, csrf, async (c) => {
     const body = await readJsonBody(c);
     if (body === undefined) {
       return c.json(

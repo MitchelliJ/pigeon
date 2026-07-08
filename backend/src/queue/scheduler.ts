@@ -60,10 +60,28 @@ export async function runSchedulerTick(db: Db): Promise<void> {
  * subsequent ticks. As with `runSchedulerTick`/`enqueueSyncJob`,
  * `enqueueClassifyJob`'s partial unique index absorbs already-in-flight jobs,
  * so no special-casing is needed here to avoid duplicates.
+ *
+ * An email whose classify job has already been dead-lettered (`status =
+ * 'failed'` after exhausting its retries — a missing/expired MISTRAL_API_KEY
+ * or a consistently un-parseable model reply) is deliberately excluded: its
+ * `summary` stays NULL forever, so without this guard the tick would re-enqueue
+ * it every minute, growing the `jobs` table unbounded and re-billing Mistral
+ * for work that cannot succeed. Dead-lettering means "give up" — an operator
+ * who fixes the underlying cause can delete the failed job row to re-arm it.
  */
 export async function enqueueDueClassifyJobs(db: Db): Promise<void> {
   const rows = await db.query`
-    SELECT id FROM emails WHERE summary IS NULL ORDER BY received_at LIMIT 500
+    SELECT e.id
+    FROM emails e
+    WHERE e.summary IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM jobs j
+        WHERE j.type = 'summarize_classify'
+          AND j.payload->>'emailId' = e.id::text
+          AND j.status = 'failed'
+      )
+    ORDER BY e.received_at
+    LIMIT 500
   `;
   await Promise.all(rows.map((row) => enqueueClassifyJob(db, String(row.id))));
 }

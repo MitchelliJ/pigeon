@@ -17,6 +17,7 @@ import type { Db } from "../db/index";
 import type { Vault } from "../vault/index";
 import type { MailboxConnector } from "./connectors/types";
 import { enqueueSyncJob } from "../queue/store";
+import { assertHostAllowed, BlockedHostError } from "./connectors/host-guard";
 
 /** Postgres SQLSTATE for a unique-constraint violation. */
 const UNIQUE_VIOLATION_CODE = "23505";
@@ -72,6 +73,23 @@ export async function connectMailbox(
   userId: string,
   input: ConnectMailboxInput,
 ): Promise<ConnectMailboxResult> {
+  // Refuse to connect to loopback/private/link-local hosts before opening any
+  // socket — otherwise this endpoint is a blind internal port scanner / SSRF
+  // probe. The rejection reason is the same generic "could not reach ..." a
+  // real unreachable host produces, so a caller can't use it to confirm which
+  // internal hosts exist.
+  try {
+    await assertHostAllowed(input.host);
+  } catch (err) {
+    if (err instanceof BlockedHostError) {
+      return {
+        kind: "connection_failed",
+        reason: `could not reach ${input.host}:${input.port}`,
+      };
+    }
+    throw err;
+  }
+
   const testResult = await connector.testConnection({
     host: input.host,
     port: input.port,

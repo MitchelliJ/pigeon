@@ -1,7 +1,11 @@
 import type { JSX } from "solid-js";
 import { createSignal, For, Show } from "solid-js";
 import type { Channel, Digest, EmailAccount } from "@pigeon/shared";
-import { channels as channelsApi, deliverySettings, mailboxes } from "../lib/api";
+import {
+  channels as channelsApi,
+  deliverySettings,
+  mailboxes,
+} from "../lib/api";
 import { formatTime } from "../lib/format";
 import {
   ArrowUpRightIcon,
@@ -46,6 +50,21 @@ export default function Sidebar(props: {
     setAddOpen(true);
   }
 
+  async function syncInbox(acc: EmailAccount) {
+    if (busyId() === acc.id) return;
+    setBusyId(acc.id);
+    try {
+      await mailboxes.syncNow(acc.id);
+      props.onChanged();
+    } catch {
+      // Swallow: a failed sync-now (offline mailbox, 5xx, network drop, or the
+      // endpoint not being live yet) must not become an unhandled rejection.
+      // The next dashboard poll reflects the real mailbox state regardless.
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function toggleChannel(ch: Channel) {
     setBusyId(ch.id);
     try {
@@ -86,10 +105,11 @@ export default function Sidebar(props: {
               <button
                 type="button"
                 class="inbox"
+                disabled={busyId() === acc.id}
                 title={connected() ? "Sync now" : "Reconnect"}
                 onClick={() => {
                   if (connected()) {
-                    void mailboxes.syncNow(acc.id).then(props.onChanged);
+                    void syncInbox(acc);
                   } else {
                     openReconnect(acc);
                   }

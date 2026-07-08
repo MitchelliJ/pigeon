@@ -62,6 +62,7 @@ if (isMain) {
       config.WORKER_CONCURRENCY,
       undefined,
       classifier,
+      config.MAILBOX_CONNECT_TIMEOUT_MS,
     ).catch((err: unknown) => {
       console.error("[worker] tick failed:", err);
     });

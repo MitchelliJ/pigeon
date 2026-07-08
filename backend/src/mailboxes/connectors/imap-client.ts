@@ -13,6 +13,14 @@ import { ImapFlow, type FetchQueryObject, type SearchObject } from "imapflow";
 import type { TestConnectionParams } from "./types";
 
 /**
+ * Fallback timeout when a call doesn't thread one through
+ * `TestConnectionParams` (e.g. the `POST /api/mailboxes` connection test).
+ * Mirrors shared.ts's `DEFAULT_CONNECT_TIMEOUT_MS` so IMAP and POP3 behave the
+ * same when no explicit timeout is supplied — see FR-5.
+ */
+const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
+
+/**
  * The narrow slice of an IMAP client `imap.ts` actually calls. `imapflow`'s
  * `ImapFlow` doesn't match this 1:1 (its real `fetch` takes a separate query
  * and options argument, and `search`/`fetch` can resolve `false`) — see
@@ -52,8 +60,15 @@ export type ImapClientFactory = (params: TestConnectionParams) => ImapClient;
  * expects that addressing flag as a *separate* third argument. Without this
  * split, `range` would silently be treated as sequence numbers instead of
  * the UIDs `listMessageIds` handed back.
+ *
+ * The connect/socket timeouts are always applied — defaulting to
+ * `DEFAULT_CONNECT_TIMEOUT_MS` when a call doesn't supply `connectTimeoutMs` —
+ * so a hung IMAP server can never stall a sync indefinitely. imapflow's
+ * `socketTimeout` is an *inactivity* timeout, so a long-but-progressing fetch
+ * (e.g. a large first sync) is never aborted while data keeps flowing.
  */
 export const defaultImapFlowFactory: ImapClientFactory = (params) => {
+  const timeoutMs = params.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   const client = new ImapFlow({
     host: params.host,
     port: params.port,
@@ -61,12 +76,8 @@ export const defaultImapFlowFactory: ImapClientFactory = (params) => {
     auth: { user: params.username, pass: params.password },
     logger: false,
     ...(params.caCert ? { tls: { ca: params.caCert } } : {}),
-    ...(params.connectTimeoutMs
-      ? {
-          connectionTimeout: params.connectTimeoutMs,
-          socketTimeout: params.connectTimeoutMs,
-        }
-      : {}),
+    connectionTimeout: timeoutMs,
+    socketTimeout: timeoutMs,
   });
 
   return {
