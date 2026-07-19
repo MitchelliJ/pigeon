@@ -11,6 +11,7 @@ import type { Provider } from "@pigeon/shared";
 import { ApiError, mailboxes, oauth } from "../lib/api";
 import { PROVIDERS, providerConfig } from "../lib/providers";
 import { CloseIcon, providerVisual } from "./visuals";
+import { useNotifications } from "./Notifications";
 
 export interface AddInboxPreset {
   provider: Provider;
@@ -27,6 +28,7 @@ export default function AddInboxDialog(props: {
   /** Fired after the backend accepted the mailbox. */
   onConnected: () => void;
 }): JSX.Element {
+  const notifications = useNotifications();
   const [step, setStep] = createSignal<1 | 2>(1);
   const [provider, setProvider] = createSignal<Provider>("gmail");
   const [protocol, setProtocol] = createSignal<"imap" | "pop3">("imap");
@@ -115,6 +117,7 @@ export default function AddInboxDialog(props: {
       });
       props.onConnected();
       props.onClose();
+      notifications.success("Inbox connected.");
     } catch (err) {
       setError(
         err instanceof ApiError
@@ -313,7 +316,9 @@ export default function AddInboxDialog(props: {
                 </div>
 
                 <Show when={error()}>
-                  <p class="auth-error">{error()}</p>
+                  <p class="auth-error" role="alert">
+                    {error()}
+                  </p>
                 </Show>
 
                 <div class="modal-actions">

@@ -3,6 +3,7 @@ import { createEffect, createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { ApiError, channels as channelsApi } from "../lib/api";
 import { CloseIcon } from "./visuals";
+import { useNotifications } from "./Notifications";
 
 function connectionError(error: unknown): string {
   if (!(error instanceof ApiError)) {
@@ -26,6 +27,7 @@ export default function AddChannelDialog(props: {
   onClose: () => void;
   onConnected: () => void;
 }): JSX.Element {
+  const notifications = useNotifications();
   const [webhookUrl, setWebhookUrl] = createSignal("");
   const [isConnecting, setIsConnecting] = createSignal(false);
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
@@ -55,6 +57,7 @@ export default function AddChannelDialog(props: {
       });
       props.onConnected();
       props.onClose();
+      notifications.success("Discord connected.");
     } catch (caught) {
       setErrorMessage(connectionError(caught));
     } finally {

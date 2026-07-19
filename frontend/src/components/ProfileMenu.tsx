@@ -2,18 +2,12 @@ import type { JSX } from "solid-js";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import type { User } from "@pigeon/shared";
 import { auth } from "../lib/api";
-import {
-  GearIcon,
-  HelpIcon,
-  initialsOf,
-  LogOutIcon,
-  SparklesIcon,
-} from "./visuals";
+import { HelpIcon, initialsOf, LogOutIcon, SparklesIcon } from "./visuals";
 
 /**
  * The account popover behind the top-right avatar. Shows who you are, the
- * plan you're on (with renewal + inbox usage), and the account actions —
- * Settings now lives here rather than as a separate top-bar button.
+ * plan you're on (with renewal + inbox usage), and account actions.
+ * General settings are opened from the dedicated top-bar cog.
  */
 export default function ProfileMenu(props: {
   user: User;
@@ -115,15 +109,6 @@ export default function ProfileMenu(props: {
 
           {/* actions */}
           <div class="profile-menu">
-            <a
-              class="profile-item"
-              role="menuitem"
-              href="/settings"
-              onClick={close}
-            >
-              <GearIcon />
-              Settings
-            </a>
             <a
               class="profile-item"
               role="menuitem"

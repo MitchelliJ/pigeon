@@ -222,12 +222,19 @@ code {
   display: grid;
   place-items: center;
   transition: all 0.15s ease;
+  cursor: pointer;
+  text-decoration: none;
 }
 
 .icon-btn:hover {
   background: var(--surface);
   border-color: var(--line);
   color: var(--ink);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .icon-badge {
@@ -1549,4 +1556,115 @@ code {
   font-size: 13px;
   display: grid;
   gap: 4px;
+}
+
+/* ---- notifications --------------------------------------------------- */
+
+.notification-viewport {
+  position: fixed;
+  z-index: 200;
+  left: 50%;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  width: min(460px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 13px 14px 13px 16px;
+  border: 1px solid var(--line-strong);
+  border-left-width: 4px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--ink);
+  pointer-events: auto;
+  animation: notification-in 180ms ease-out both;
+}
+
+.notification-success {
+  border-left-color: var(--noise);
+  background: linear-gradient(90deg, var(--noise-wash), var(--surface) 32%);
+}
+
+.notification-error {
+  border-left-color: var(--requires-action);
+  background: linear-gradient(
+    90deg,
+    var(--requires-action-wash),
+    var(--surface) 32%
+  );
+}
+
+.notification-info {
+  border-left-color: var(--important);
+  background: linear-gradient(90deg, var(--important-wash), var(--surface) 32%);
+}
+
+.notification-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.notification-kind {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notification-dismiss {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.notification-dismiss:hover {
+  background: var(--surface-sunk);
+  color: var(--ink);
+}
+
+.notification-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@keyframes notification-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 520px) {
+  .notification-viewport {
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: calc(100vw - 20px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification {
+    animation: none;
+  }
 }

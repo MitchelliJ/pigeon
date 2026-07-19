@@ -7,8 +7,17 @@ import Sidebar from "./Sidebar";
 import Hero from "./Hero";
 import StatCard from "./StatCard";
 import EmailList from "./EmailList";
+import { NotificationProvider } from "./Notifications";
 
 export default function Dashboard(): JSX.Element {
+  return (
+    <NotificationProvider>
+      <DashboardContent />
+    </NotificationProvider>
+  );
+}
+
+function DashboardContent(): JSX.Element {
   const [data, setData] = createSignal<DashboardData | null>(null);
   const [failed, setFailed] = createSignal(false);
   let inFlight = false;

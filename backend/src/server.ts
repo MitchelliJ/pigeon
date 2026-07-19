@@ -25,6 +25,7 @@ import { mailboxesRoutes } from "./mailboxes/routes";
 import { dashboardRoutes } from "./mailboxes/dashboard";
 import { emailsRoutes } from "./emails/routes";
 import { oauthRoutes } from "./oauth/routes";
+import { profileRoutes } from "./profile/routes";
 import { createMailSender } from "./mail/index";
 import { createVault } from "./vault/index";
 import { channelRoutes } from "./channels/routes";
@@ -74,6 +75,7 @@ export function createApp(
   app.route("/", dashboardRoutes(db));
   app.route("/", emailsRoutes(db));
   app.route("/", oauthRoutes(db));
+  app.route("/", profileRoutes(db));
   app.route("/", channelRoutes(db, channelRegistry, vault));
 
   return app;

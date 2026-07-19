@@ -12,3 +12,22 @@ export function formatTime(time: string): string {
   const hour12 = h % 12 === 0 ? 12 : h % 12;
   return `${hour12}:${mStr.padStart(2, "0")}${period}`;
 }
+
+/** Format an API timestamp for people, in their configured delivery zone. */
+export function formatDateTime(timestamp: string, timezone: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: timezone,
+    }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(date);
+  }
+}

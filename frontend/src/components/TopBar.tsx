@@ -1,7 +1,7 @@
 import type { JSX } from "solid-js";
 import { Show } from "solid-js";
 import type { User } from "@pigeon/shared";
-import { BellIcon } from "./visuals";
+import { BellIcon, GearIcon } from "./visuals";
 import ProfileMenu from "./ProfileMenu";
 
 export default function TopBar(props: {
@@ -24,6 +24,14 @@ export default function TopBar(props: {
               <span class="icon-badge">{props.alerts}</span>
             </Show>
           </button>
+          <a
+            class="icon-btn"
+            href="/settings"
+            aria-label="Settings"
+            title="Settings"
+          >
+            <GearIcon />
+          </a>
           <ProfileMenu user={props.user} inboxCount={props.inboxCount} />
         </div>
       </div>

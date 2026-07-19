@@ -10,46 +10,26 @@ function scheduleDays(incoming: readonly Weekday[]): Set<Weekday> {
   return new Set(incoming.length > 0 ? incoming : WEEKDAYS);
 }
 
-const FALLBACK_TIMEZONES = [
-  "Europe/Amsterdam",
-  "Europe/Brussels",
-  "Europe/London",
-  "UTC",
-  "America/New_York",
-  "America/Los_Angeles",
-  "Asia/Tokyo",
-  "Australia/Sydney",
-];
-
-function timezoneOptions(current: string): string[] {
-  const intl = Intl as typeof Intl & {
-    supportedValuesOf?: (key: "timeZone") => string[];
-  };
-  const supported = intl.supportedValuesOf?.("timeZone") ?? [];
-  return [...new Set([...supported, ...FALLBACK_TIMEZONES, current])].sort(
-    (a, b) => a.localeCompare(b),
-  );
-}
-
 export default function EditScheduleDialog(props: {
   open: boolean;
   time: string;
   days: readonly Weekday[];
-  timezone: string;
   onClose: () => void;
-  onSave: (time: string, days: readonly Weekday[], timezone: string) => void;
+  onSave: (time: string, days: readonly Weekday[]) => Promise<void>;
 }): JSX.Element {
   const [time, setTime] = createSignal(untrack(() => props.time));
   const [days, setDays] = createSignal<Set<Weekday>>(
     untrack(() => scheduleDays(props.days)),
   );
-  const [timezone, setTimezone] = createSignal(untrack(() => props.timezone));
+  const [isSaving, setIsSaving] = createSignal(false);
+  const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
 
   createEffect(() => {
     if (props.open) {
       setTime(props.time);
       setDays(scheduleDays(props.days));
-      setTimezone(props.timezone);
+      setIsSaving(false);
+      setErrorMessage(null);
     }
   });
 
@@ -65,21 +45,37 @@ export default function EditScheduleDialog(props: {
     });
   }
 
-  function save() {
+  function close() {
+    if (!isSaving()) props.onClose();
+  }
+
+  async function save() {
+    if (isSaving() || days().size === 0) return;
     const ordered = WEEKDAYS.filter((d) => days().has(d));
-    props.onSave(time(), ordered, timezone());
-    props.onClose();
+    setIsSaving(true);
+    setErrorMessage(null);
+    try {
+      await props.onSave(time(), ordered);
+      props.onClose();
+    } catch {
+      setErrorMessage(
+        "Could not save your schedule. Your changes are still open.",
+      );
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
     <Show when={props.open}>
       <Portal>
-        <div class="modal-overlay" onClick={() => props.onClose()}>
+        <div class="modal-overlay" onClick={close}>
           <div
             class="modal modal-sm rise"
             role="dialog"
             aria-modal="true"
             aria-label="Edit digest schedule"
+            aria-busy={isSaving()}
             onClick={(e) => e.stopPropagation()}
           >
             <div class="modal-head">
@@ -90,7 +86,8 @@ export default function EditScheduleDialog(props: {
               <button
                 class="icon-btn"
                 aria-label="Close"
-                onClick={() => props.onClose()}
+                disabled={isSaving()}
+                onClick={close}
               >
                 <CloseIcon />
               </button>
@@ -103,29 +100,11 @@ export default function EditScheduleDialog(props: {
                   class="input"
                   type="time"
                   value={time()}
+                  disabled={isSaving()}
                   onInput={(e) => setTime(e.currentTarget.value)}
                 />
-                <span class="time-preview">
-                  {formatTime(time())} in {timezone()}
-                </span>
+                <span class="time-preview">{formatTime(time())}</span>
               </div>
-            </div>
-
-            <div class="field">
-              <label class="field-label" for="digest-timezone">
-                Timezone
-              </label>
-              <select
-                id="digest-timezone"
-                class="select"
-                value={timezone()}
-                onInput={(e) => setTimezone(e.currentTarget.value)}
-              >
-                <For each={timezoneOptions(props.timezone)}>
-                  {(zone) => <option value={zone}>{zone}</option>}
-                </For>
-              </select>
-              <p class="hint">Times follow daylight-saving changes.</p>
             </div>
 
             <div class="field">
@@ -138,6 +117,7 @@ export default function EditScheduleDialog(props: {
                       class="day-pill"
                       classList={{ on: days().has(day) }}
                       aria-pressed={days().has(day)}
+                      disabled={isSaving()}
                       onClick={() => toggle(day)}
                     >
                       {day}
@@ -147,17 +127,25 @@ export default function EditScheduleDialog(props: {
               </div>
             </div>
 
+            <Show when={errorMessage()}>
+              {(message) => (
+                <p class="auth-error" role="alert">
+                  {message()}
+                </p>
+              )}
+            </Show>
+
             <div class="modal-actions">
-              <button class="btn" onClick={() => props.onClose()}>
+              <button class="btn" disabled={isSaving()} onClick={close}>
                 Cancel
               </button>
               <button
                 class="btn btn-primary"
                 style={{ flex: 1 }}
-                disabled={days().size === 0}
-                onClick={save}
+                disabled={days().size === 0 || isSaving()}
+                onClick={() => void save()}
               >
-                Save schedule
+                {isSaving() ? "Saving…" : "Save schedule"}
               </button>
             </div>
           </div>

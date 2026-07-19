@@ -1,8 +1,17 @@
 import type { JSX } from "solid-js";
 import { createSignal, Show } from "solid-js";
 import { ApiError, privacy } from "../lib/api";
+import { NotificationProvider } from "./Notifications";
 
 export default function PrivacyPanel(): JSX.Element {
+  return (
+    <NotificationProvider>
+      <PrivacyPanelContent />
+    </NotificationProvider>
+  );
+}
+
+function PrivacyPanelContent(): JSX.Element {
   const [password, setPassword] = createSignal("");
   const [confirmText, setConfirmText] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);

@@ -6,7 +6,7 @@ import {
   deliverySettings,
   mailboxes,
 } from "../lib/api";
-import { formatTime } from "../lib/format";
+import { formatDateTime, formatTime } from "../lib/format";
 import {
   ArrowUpRightIcon,
   CalendarIcon,
@@ -19,6 +19,7 @@ import {
 import AddInboxDialog, { type AddInboxPreset } from "./AddInboxDialog";
 import AddChannelDialog from "./AddChannelDialog";
 import EditScheduleDialog from "./EditScheduleDialog";
+import { useNotifications } from "./Notifications";
 
 export default function Sidebar(props: {
   accounts: EmailAccount[];
@@ -28,6 +29,7 @@ export default function Sidebar(props: {
   /** Called after any successful mutation so the dashboard refetches. */
   onChanged: () => void;
 }): JSX.Element {
+  const notifications = useNotifications();
   const [isInboxDialogOpen, setIsInboxDialogOpen] = createSignal(false);
   const [inboxPreset, setInboxPreset] = createSignal<AddInboxPreset | null>(
     null,
@@ -41,6 +43,8 @@ export default function Sidebar(props: {
   const [channelErrorMessage, setChannelErrorMessage] = createSignal<
     string | null
   >(null);
+  const [isChangingDeliveryMode, setIsChangingDeliveryMode] =
+    createSignal(false);
 
   function openAdd() {
     setInboxPreset(null);
@@ -63,10 +67,9 @@ export default function Sidebar(props: {
     try {
       await mailboxes.syncNow(acc.id);
       props.onChanged();
+      notifications.success(`Sync started for ${acc.label}.`);
     } catch {
-      // Swallow: a failed sync-now (offline mailbox, 5xx, network drop, or the
-      // endpoint not being live yet) must not become an unhandled rejection.
-      // The next dashboard poll reflects the real mailbox state regardless.
+      notifications.error(`Could not start a sync for ${acc.label}.`);
     } finally {
       setSyncingInboxId(null);
     }
@@ -85,6 +88,7 @@ export default function Sidebar(props: {
     try {
       await channelsApi.test(ch.id);
       props.onChanged();
+      notifications.success("Discord test sent.");
     } catch {
       setChannelErrorMessage(
         "Could not send a Discord test. Please try again.",
@@ -101,6 +105,7 @@ export default function Sidebar(props: {
     try {
       await channelsApi.remove(ch.id);
       props.onChanged();
+      notifications.success("Discord disconnected.");
     } catch {
       setChannelErrorMessage("Could not disconnect Discord. Please try again.");
     } finally {
@@ -111,19 +116,29 @@ export default function Sidebar(props: {
   async function saveSchedule(
     time: string,
     days: Digest["digestDays"],
-    timezone: string,
   ): Promise<void> {
     await deliverySettings.update({
       digestTime: time,
       digestDays: days,
-      timezone,
     });
     props.onChanged();
+    notifications.success("Digest schedule saved.");
   }
 
   async function setDigestMode(mode: Digest["mode"]): Promise<void> {
-    await deliverySettings.update({ mode });
-    props.onChanged();
+    if (isChangingDeliveryMode() || mode === props.digest.mode) return;
+    setIsChangingDeliveryMode(true);
+    try {
+      await deliverySettings.update({ mode });
+      props.onChanged();
+      notifications.success(
+        `Delivery mode changed to ${mode === "daily" ? "Daily digest" : "Quiet mode"}.`,
+      );
+    } catch {
+      notifications.error("Could not change the delivery mode.");
+    } finally {
+      setIsChangingDeliveryMode(false);
+    }
   }
 
   return (
@@ -272,6 +287,7 @@ export default function Sidebar(props: {
             type="button"
             class="digest-mode"
             classList={{ active: props.digest.mode === "daily" }}
+            disabled={isChangingDeliveryMode()}
             onClick={() => void setDigestMode("daily")}
           >
             <CalendarIcon /> Daily digest
@@ -280,6 +296,7 @@ export default function Sidebar(props: {
             type="button"
             class="digest-mode"
             classList={{ active: props.digest.mode === "quiet" }}
+            disabled={isChangingDeliveryMode()}
             onClick={() => void setDigestMode("quiet")}
           >
             <MoonIcon /> Quiet mode
@@ -300,8 +317,7 @@ export default function Sidebar(props: {
                 <p class="digest-sub">
                   New requires-action emails are sent immediately. During quiet
                   stretches, Pigeon sends reassurance at{" "}
-                  {formatTime(props.digest.digestTime)} in{" "}
-                  {props.digest.timezone} on your selected days.
+                  {formatTime(props.digest.digestTime)} on your selected days.
                 </p>
                 <button
                   class="digest-edit"
@@ -316,12 +332,17 @@ export default function Sidebar(props: {
               <span class="digest-icon">
                 <SendIcon />
               </span>
-              Daily digest at {formatTime(props.digest.digestTime)} in{" "}
-              {props.digest.timezone}
+              Daily digest at {formatTime(props.digest.digestTime)}
             </h3>
             <p class="digest-sub">
-              Only scheduled digests are sent. Last sent{" "}
-              {props.digest.lastSuccessfulDigestAt ?? "Never"}.
+              Only scheduled digests are sent. Last sent:{" "}
+              {props.digest.lastSuccessfulDigestAt === null
+                ? "Never"
+                : formatDateTime(
+                    props.digest.lastSuccessfulDigestAt,
+                    props.digest.timezone,
+                  )}
+              .
             </p>
             <button
               class="digest-edit"
@@ -349,11 +370,8 @@ export default function Sidebar(props: {
         open={isScheduleDialogOpen()}
         time={props.digest.digestTime}
         days={props.digest.digestDays}
-        timezone={props.digest.timezone}
         onClose={() => setIsScheduleDialogOpen(false)}
-        onSave={(time, days, timezone) =>
-          void saveSchedule(time, days, timezone)
-        }
+        onSave={saveSchedule}
       />
     </aside>
   );

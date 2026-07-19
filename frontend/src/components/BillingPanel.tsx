@@ -1,6 +1,7 @@
 import type { JSX } from "solid-js";
 import { createResource, createSignal, For, Show } from "solid-js";
 import { ApiError, billing } from "../lib/api";
+import { NotificationProvider, useNotifications } from "./Notifications";
 
 function pct(used: number, max: number): string {
   if (max <= 0) return "0%";
@@ -13,6 +14,15 @@ function syncLabel(ms: number): string {
 }
 
 export default function BillingPanel(): JSX.Element {
+  return (
+    <NotificationProvider>
+      <BillingPanelContent />
+    </NotificationProvider>
+  );
+}
+
+function BillingPanelContent(): JSX.Element {
+  const notifications = useNotifications();
   const [report, { refetch }] = createResource(() =>
     billing.usage().catch((err) => {
       if (
@@ -26,29 +36,33 @@ export default function BillingPanel(): JSX.Element {
     }),
   );
   const [busyTier, setBusyTier] = createSignal<string | null>(null);
-  const [notice, setNotice] = createSignal<string | null>(null);
 
   async function choose(tier: string) {
     setBusyTier(tier);
-    setNotice(null);
     try {
+      let successMessage: string;
       if (tier === "free") {
         await billing.cancel();
-        setNotice("Downgraded to Free.");
+        successMessage = "Plan changed to Free.";
       } else {
         const result = await billing.checkout(tier as "pro" | "team");
         if (result.mode === "checkout") {
           window.location.href = result.checkoutUrl;
           return;
         }
-        setNotice(
-          `You're on ${tier} now (sandbox mode — no payment provider configured).`,
+        successMessage = `Plan changed to ${tier} in sandbox mode.`;
+      }
+      notifications.success(successMessage);
+      try {
+        await refetch();
+      } catch {
+        notifications.info(
+          "Your plan changed, but the displayed usage could not be refreshed.",
         );
       }
-      await refetch();
-    } catch (err) {
-      setNotice(
-        err instanceof ApiError ? err.message : "Something went wrong.",
+    } catch (error) {
+      notifications.error(
+        error instanceof ApiError ? error.message : "Could not change plans.",
       );
     } finally {
       setBusyTier(null);
@@ -108,10 +122,6 @@ export default function BillingPanel(): JSX.Element {
                 </div>
               </div>
             </section>
-
-            <Show when={notice()}>
-              <p class="hint page-notice">{notice()}</p>
-            </Show>
 
             <div class="plans">
               <For each={r().tiers}>
