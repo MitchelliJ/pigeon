@@ -1,13 +1,12 @@
 import type { JSX } from "solid-js";
-import { Show } from "solid-js";
 import type { User } from "@pigeon/shared";
-import { BellIcon, GearIcon } from "./visuals";
+import { GearIcon } from "./visuals";
 import ProfileMenu from "./ProfileMenu";
 
 export default function TopBar(props: {
   user: User;
-  alerts: number;
   inboxCount: number;
+  onOpenSettings: () => void;
 }): JSX.Element {
   return (
     <header class="topbar">
@@ -18,20 +17,16 @@ export default function TopBar(props: {
         </div>
 
         <div class="topbar-actions">
-          <button class="icon-btn" aria-label="Notifications">
-            <BellIcon />
-            <Show when={props.alerts > 0}>
-              <span class="icon-badge">{props.alerts}</span>
-            </Show>
-          </button>
-          <a
+          <button
+            id="settings-trigger"
+            type="button"
             class="icon-btn"
-            href="/settings"
             aria-label="Settings"
             title="Settings"
+            onClick={() => props.onOpenSettings()}
           >
             <GearIcon />
-          </a>
+          </button>
           <ProfileMenu user={props.user} inboxCount={props.inboxCount} />
         </div>
       </div>

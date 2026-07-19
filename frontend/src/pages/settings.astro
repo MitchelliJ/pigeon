@@ -1,8 +1,5 @@
 ---
-import Page from "../layouts/Page.astro";
-import SettingsPanel from "../components/SettingsPanel";
+import DashboardPage from "../layouts/DashboardPage.astro";
 ---
 
-<Page title="Settings — Pigeon">
-  <SettingsPanel client:only="solid-js" />
-</Page>
+<DashboardPage initialSettingsOpen />

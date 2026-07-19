@@ -7,19 +7,27 @@ import Sidebar from "./Sidebar";
 import Hero from "./Hero";
 import StatCard from "./StatCard";
 import EmailList from "./EmailList";
+import SettingsDialog from "./SettingsDialog";
 import { NotificationProvider } from "./Notifications";
 
-export default function Dashboard(): JSX.Element {
+export default function Dashboard(props: {
+  initialSettingsOpen?: boolean;
+}): JSX.Element {
   return (
     <NotificationProvider>
-      <DashboardContent />
+      <DashboardContent initialSettingsOpen={props.initialSettingsOpen} />
     </NotificationProvider>
   );
 }
 
-function DashboardContent(): JSX.Element {
+function DashboardContent(props: {
+  initialSettingsOpen?: boolean;
+}): JSX.Element {
   const [data, setData] = createSignal<DashboardData | null>(null);
   const [failed, setFailed] = createSignal(false);
+  const [settingsOpen, setSettingsOpen] = createSignal(
+    props.initialSettingsOpen ?? false,
+  );
   let inFlight = false;
 
   // Refreshes swap data in beneath the mounted dashboard: no loading screen,
@@ -39,6 +47,40 @@ function DashboardContent(): JSX.Element {
     } finally {
       inFlight = false;
     }
+  }
+
+  function openSettings(): void {
+    if (window.location.pathname !== "/settings") {
+      window.history.pushState({ pigeonSettings: true }, "", "/settings");
+    }
+    setSettingsOpen(true);
+  }
+
+  function closeSettings(): void {
+    setSettingsOpen(false);
+    if (window.location.pathname === "/settings") {
+      const state = window.history.state as { pigeonSettings?: unknown } | null;
+      if (state?.pigeonSettings === true) {
+        window.history.back();
+      } else {
+        window.history.replaceState(null, "", "/");
+      }
+    }
+    requestAnimationFrame(() => {
+      document.getElementById("settings-trigger")?.focus();
+    });
+  }
+
+  function applySettings(values: { name: string; timezone: string }): void {
+    setData((current) =>
+      current === null
+        ? current
+        : {
+            ...current,
+            user: { ...current.user, name: values.name },
+            digest: { ...current.digest, timezone: values.timezone },
+          },
+    );
   }
 
   // Keep the feed fresh: syncs and triage happen in the background worker.
@@ -62,12 +104,18 @@ function DashboardContent(): JSX.Element {
       scheduleNext();
     };
 
+    const onPopState = () => {
+      setSettingsOpen(window.location.pathname === "/settings");
+    };
+
     void refresh();
     scheduleNext();
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("popstate", onPopState);
     onCleanup(() => {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("popstate", onPopState);
     });
   });
 
@@ -78,8 +126,8 @@ function DashboardContent(): JSX.Element {
           <>
             <TopBar
               user={d().user}
-              alerts={d().stats.requires_action}
               inboxCount={d().accounts.length}
+              onOpenSettings={openSettings}
             />
             <div class="app">
               <main class="main">
@@ -120,6 +168,13 @@ function DashboardContent(): JSX.Element {
                 onChanged={() => void refresh()}
               />
             </div>
+            <SettingsDialog
+              open={settingsOpen()}
+              user={d().user}
+              timezone={d().digest.timezone}
+              onClose={closeSettings}
+              onSaved={applySettings}
+            />
           </>
         )}
       </Match>

@@ -237,23 +237,6 @@ code {
   outline-offset: 2px;
 }
 
-.icon-badge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--requires-action);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  display: grid;
-  place-items: center;
-  box-shadow: 0 0 0 2px var(--bg);
-}
-
 /* ----------------------------------------------------------------- avatars */
 
 .avatar {
@@ -1182,6 +1165,44 @@ code {
   max-width: 400px;
 }
 
+.settings-modal {
+  max-width: 620px;
+}
+
+.settings-modal .modal-form {
+  gap: 18px;
+}
+
+.settings-section {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.75fr) minmax(0, 1.5fr);
+  gap: 14px 20px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.settings-section > .field {
+  grid-column: 2;
+}
+
+.settings-section-title {
+  margin: 0 0 4px;
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 500;
+}
+
+.settings-section .hint {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.settings-actions {
+  justify-content: flex-end;
+}
+
 .modal-head {
   display: flex;
   align-items: flex-start;
@@ -1400,6 +1421,15 @@ code {
   }
   .email {
     flex-wrap: wrap;
+  }
+  .modal-overlay {
+    padding: 12px;
+  }
+  .settings-section {
+    grid-template-columns: 1fr;
+  }
+  .settings-section > .field {
+    grid-column: 1;
   }
 }
 

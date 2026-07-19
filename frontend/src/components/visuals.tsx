@@ -54,27 +54,6 @@ export function SearchIcon(): JSX.Element {
   );
 }
 
-export function BellIcon(): JSX.Element {
-  return (
-    <svg width="17" height="17" viewBox="0 0 18 18" aria-hidden="true">
-      <path
-        d="M9 2a4 4 0 0 0-4 4c0 3-1.2 4.3-1.8 5-.4.5 0 1.2.6 1.2h10.4c.6 0 1-.7.6-1.2-.6-.7-1.8-2-1.8-5a4 4 0 0 0-4-4z"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.4"
-        stroke-linejoin="round"
-      />
-      <path
-        d="M7.3 15a1.8 1.8 0 0 0 3.4 0"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.4"
-        stroke-linecap="round"
-      />
-    </svg>
-  );
-}
-
 export function GearIcon(): JSX.Element {
   return (
     <svg
