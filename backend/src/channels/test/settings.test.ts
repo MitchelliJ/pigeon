@@ -173,17 +173,33 @@ describe("delivery settings service", () => {
     }
   });
 
-  it("returns settings with UTC timezone", async () => {
+  it("uses Amsterdam by default and persists a valid IANA timezone", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
       const userId = await insertUser(db, "timezone@example.com");
 
-      const settings = await updateDeliverySettings(db, userId, {
-        digestTime: "08:00",
-      });
+      const defaults = await getDeliverySettings(db, userId);
+      expect(defaults.timezone).toBe("Europe/Amsterdam");
 
-      expect(settings.timezone).toBe("UTC");
+      const settings = await updateDeliverySettings(db, userId, {
+        timezone: "Europe/London",
+      });
+      expect(settings.timezone).toBe("Europe/London");
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects timezone names PostgreSQL cannot schedule", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "invalid-timezone@example.com");
+
+      await expect(
+        updateDeliverySettings(db, userId, { timezone: "Mars/Olympus_Mons" }),
+      ).rejects.toMatchObject({ code: "invalid_delivery_settings" });
     } finally {
       await close();
     }

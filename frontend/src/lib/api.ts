@@ -166,7 +166,7 @@ type DeliverySettings = Pick<
   "mode" | "digestTime" | "digestDays" | "timezone"
 >;
 type DeliverySettingsPatch = Partial<
-  Pick<Digest, "mode" | "digestTime" | "digestDays">
+  Pick<Digest, "mode" | "digestTime" | "digestDays" | "timezone">
 >;
 type DeliverySettingsResponse = {
   settings: Omit<DeliverySettings, "digestDays"> & { digestDays: number[] };

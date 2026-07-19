@@ -161,8 +161,8 @@ export default function AddInboxDialog(props: {
             {/* Step 1 — provider grid */}
             <Show when={step() === 1}>
               <p class="modal-sub">
-                Pick your email provider. Pigeon connects over IMAP with an
-                app-specific password — it never sees your real login.
+                Pick your email provider. Pigeon connects with the IMAP or POP3
+                credential accepted by your provider and encrypts it at rest.
               </p>
               <div class="provider-grid">
                 <For each={PROVIDERS}>
@@ -264,11 +264,11 @@ export default function AddInboxDialog(props: {
                 </div>
 
                 <div class="field">
-                  <label class="field-label">App password</label>
+                  <label class="field-label">Password or app password</label>
                   <input
                     class="input"
                     type="password"
-                    placeholder="xxxx xxxx xxxx xxxx"
+                    placeholder="Your email provider credential"
                     value={form().password}
                     onInput={(e) =>
                       setForm({ ...form(), password: e.currentTarget.value })
@@ -298,7 +298,9 @@ export default function AddInboxDialog(props: {
                     <label class="field-label">Port</label>
                     <input
                       class="input webhook-input"
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       value={form().port}
                       onInput={(e) =>
                         setForm({

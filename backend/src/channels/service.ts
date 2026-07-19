@@ -41,6 +41,7 @@ export interface DeliverySettingsPatch {
   mode?: string;
   digestTime?: string;
   digestDays?: number[];
+  timezone?: string;
 }
 
 export class ChannelServiceError extends Error {
@@ -120,8 +121,17 @@ export async function updateDeliverySettings(
       ON CONFLICT (user_id) DO NOTHING
     `;
 
+    if (patch.timezone !== undefined) {
+      const validRows = await tx`
+        SELECT delivery_timezone_is_valid(${patch.timezone}) AS is_valid
+      `;
+      if (validRows[0]?.is_valid !== true) {
+        throw channelError("invalid_delivery_settings");
+      }
+    }
+
     const rows = await tx`
-      SELECT mode
+      SELECT mode, timezone
       FROM delivery_settings
       WHERE user_id = ${userId}
       FOR UPDATE
@@ -133,9 +143,13 @@ export async function updateDeliverySettings(
 
     const modeChanged =
       patch.mode !== undefined && patch.mode !== String(current.mode);
+    const timezoneChanged =
+      patch.timezone !== undefined &&
+      patch.timezone !== String(current.timezone);
     const mode = patch.mode ?? null;
     const digestTime = patch.digestTime ?? null;
     const digestDays = patch.digestDays ?? null;
+    const timezone = patch.timezone ?? null;
 
     await tx`
       UPDATE delivery_settings
@@ -143,6 +157,7 @@ export async function updateDeliverySettings(
         mode = COALESCE(${mode}::TEXT, mode),
         digest_time = COALESCE(${digestTime}::TIME, digest_time),
         digest_days = COALESCE(${digestDays}::SMALLINT[], digest_days),
+        timezone = COALESCE(${timezone}::TEXT, timezone),
         delivery_baseline_at = CASE
           WHEN ${modeChanged} THEN now()
           ELSE delivery_baseline_at
@@ -155,14 +170,19 @@ export async function updateDeliverySettings(
       WHERE user_id = ${userId}
     `;
 
-    if (modeChanged) {
+    if (modeChanged || timezoneChanged) {
+      const reason = modeChanged
+        ? "Delivery mode changed"
+        : "Delivery timezone changed";
       await tx`
         UPDATE delivery_attempts
         SET
           status = 'failed',
-          last_error = 'Delivery mode changed',
+          last_error = ${reason},
           updated_at = now()
-        WHERE user_id = ${userId} AND status = 'pending'
+        WHERE user_id = ${userId}
+          AND status = 'pending'
+          AND (${modeChanged} OR kind IN ('digest', 'heartbeat'))
       `;
     }
   });
@@ -237,15 +257,31 @@ export async function testChannel(
 }
 
 function validateDeliverySettingsPatch(patch: DeliverySettingsPatch): void {
+  const allowedKeys = new Set(["mode", "digestTime", "digestDays", "timezone"]);
   if (
+    typeof patch !== "object" ||
+    patch === null ||
+    Array.isArray(patch) ||
+    Object.keys(patch).length === 0 ||
+    Object.keys(patch).some((key) => !allowedKeys.has(key)) ||
     (patch.mode !== undefined && !isDeliveryMode(patch.mode)) ||
     (patch.digestTime !== undefined &&
       (typeof patch.digestTime !== "string" ||
         !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(patch.digestTime))) ||
-    (patch.digestDays !== undefined && !areDigestDaysValid(patch.digestDays))
+    (patch.digestDays !== undefined && !areDigestDaysValid(patch.digestDays)) ||
+    (patch.timezone !== undefined && !isTimezoneShapeValid(patch.timezone))
   ) {
     throw channelError("invalid_delivery_settings");
   }
+}
+
+function isTimezoneShapeValid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 255 &&
+    /^[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/.test(value)
+  );
 }
 
 function isDeliveryMode(value: unknown): value is DeliveryMode {

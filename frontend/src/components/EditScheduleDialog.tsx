@@ -10,22 +10,46 @@ function scheduleDays(incoming: readonly Weekday[]): Set<Weekday> {
   return new Set(incoming.length > 0 ? incoming : WEEKDAYS);
 }
 
+const FALLBACK_TIMEZONES = [
+  "Europe/Amsterdam",
+  "Europe/Brussels",
+  "Europe/London",
+  "UTC",
+  "America/New_York",
+  "America/Los_Angeles",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+];
+
+function timezoneOptions(current: string): string[] {
+  const intl = Intl as typeof Intl & {
+    supportedValuesOf?: (key: "timeZone") => string[];
+  };
+  const supported = intl.supportedValuesOf?.("timeZone") ?? [];
+  return [...new Set([...supported, ...FALLBACK_TIMEZONES, current])].sort(
+    (a, b) => a.localeCompare(b),
+  );
+}
+
 export default function EditScheduleDialog(props: {
   open: boolean;
   time: string;
   days: readonly Weekday[];
+  timezone: string;
   onClose: () => void;
-  onSave: (time: string, days: readonly Weekday[]) => void;
+  onSave: (time: string, days: readonly Weekday[], timezone: string) => void;
 }): JSX.Element {
   const [time, setTime] = createSignal(untrack(() => props.time));
   const [days, setDays] = createSignal<Set<Weekday>>(
     untrack(() => scheduleDays(props.days)),
   );
+  const [timezone, setTimezone] = createSignal(untrack(() => props.timezone));
 
   createEffect(() => {
     if (props.open) {
       setTime(props.time);
       setDays(scheduleDays(props.days));
+      setTimezone(props.timezone);
     }
   });
 
@@ -43,7 +67,7 @@ export default function EditScheduleDialog(props: {
 
   function save() {
     const ordered = WEEKDAYS.filter((d) => days().has(d));
-    props.onSave(time(), ordered);
+    props.onSave(time(), ordered, timezone());
     props.onClose();
   }
 
@@ -73,7 +97,7 @@ export default function EditScheduleDialog(props: {
             </div>
 
             <div class="field">
-              <label class="field-label">Send at (UTC)</label>
+              <label class="field-label">Send at</label>
               <div class="time-pick">
                 <input
                   class="input"
@@ -81,8 +105,27 @@ export default function EditScheduleDialog(props: {
                   value={time()}
                   onInput={(e) => setTime(e.currentTarget.value)}
                 />
-                <span class="time-preview">{formatTime(time())} UTC</span>
+                <span class="time-preview">
+                  {formatTime(time())} in {timezone()}
+                </span>
               </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="digest-timezone">
+                Timezone
+              </label>
+              <select
+                id="digest-timezone"
+                class="select"
+                value={timezone()}
+                onInput={(e) => setTimezone(e.currentTarget.value)}
+              >
+                <For each={timezoneOptions(props.timezone)}>
+                  {(zone) => <option value={zone}>{zone}</option>}
+                </For>
+              </select>
+              <p class="hint">Times follow daylight-saving changes.</p>
             </div>
 
             <div class="field">

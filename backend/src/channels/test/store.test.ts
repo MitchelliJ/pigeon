@@ -22,7 +22,7 @@ async function createUser(db: Db, email: string): Promise<string> {
 }
 
 describe("channel delivery settings store", () => {
-  it("lazily creates and returns daily UTC defaults with a baseline and null last digest", async () => {
+  it("lazily creates daily Amsterdam defaults with a baseline and null last digest", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -35,7 +35,7 @@ describe("channel delivery settings store", () => {
         mode: "daily",
         digestTime: "08:00",
         digestDays: [1, 2, 3, 4, 5, 6, 7],
-        timezone: "UTC",
+        timezone: "Europe/Amsterdam",
         deliveryBaselineAt: expect.any(Date),
         lastDigestCutoffAt: null,
       });

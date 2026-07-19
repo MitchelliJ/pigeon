@@ -133,7 +133,7 @@ describe("migration 0009 — Discord delivery schema", () => {
     }
   });
 
-  it("creates delivery_settings with daily UTC defaults and cascades from users", async () => {
+  it("creates delivery_settings with daily Amsterdam defaults and cascades from users", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -148,6 +148,7 @@ describe("migration 0009 — Discord delivery schema", () => {
           mode,
           digest_time::text AS digest_time,
           digest_days,
+          timezone,
           delivery_baseline_at IS NOT NULL AS has_baseline,
           last_digest_cutoff_at
         FROM delivery_settings
@@ -157,6 +158,7 @@ describe("migration 0009 — Discord delivery schema", () => {
           mode: "daily",
           digest_time: "08:00:00",
           digest_days: [1, 2, 3, 4, 5, 6, 7],
+          timezone: "Europe/Amsterdam",
           has_baseline: true,
           last_digest_cutoff_at: null,
         },

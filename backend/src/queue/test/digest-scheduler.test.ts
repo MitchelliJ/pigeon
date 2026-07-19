@@ -44,6 +44,7 @@ async function insertDeliveryOwner(
     baselineAt: Date;
     cutoffAt?: Date | null;
     channelStatus?: ChannelStatus | null;
+    timezone?: string;
   },
 ): Promise<DeliveryOwner> {
   const userId = await insertUser(db, suffix);
@@ -64,12 +65,12 @@ async function insertDeliveryOwner(
 
   await db.query`
     INSERT INTO delivery_settings(
-      user_id, mode, digest_time, digest_days, delivery_baseline_at,
+      user_id, mode, digest_time, digest_days, timezone, delivery_baseline_at,
       last_digest_cutoff_at
     ) VALUES (
       ${userId}, ${options.mode}, ${options.digestTime}::time,
-      ${options.digestDays}, ${options.baselineAt},
-      ${options.cutoffAt ?? null}
+      ${options.digestDays}, ${options.timezone ?? "UTC"},
+      ${options.baselineAt}, ${options.cutoffAt ?? null}
     )
   `;
 
@@ -224,6 +225,54 @@ describe("scheduleDailyDigests", () => {
           },
         ],
       });
+    } finally {
+      await close();
+    }
+  });
+
+  it("schedules Amsterdam wall-clock time with winter and summer DST offsets", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const winter = await insertDeliveryOwner(db, "digest-amsterdam-winter", {
+        mode: "daily",
+        digestTime: "08:00",
+        digestDays: [1],
+        timezone: "Europe/Amsterdam",
+        baselineAt: new Date("2026-01-11T00:00:00.000Z"),
+      });
+
+      await scheduleDailyDigests(db, new Date("2026-01-12T07:05:00.000Z"));
+      await db.query`
+        UPDATE channels SET status = 'error' WHERE id = ${winter.channelId}
+      `;
+
+      await insertDeliveryOwner(db, "digest-amsterdam-summer", {
+        mode: "daily",
+        digestTime: "08:00",
+        digestDays: [1],
+        timezone: "Europe/Amsterdam",
+        baselineAt: new Date("2026-07-12T00:00:00.000Z"),
+      });
+      await scheduleDailyDigests(db, new Date("2026-07-13T06:05:00.000Z"));
+
+      const attempts = await db.query`
+        SELECT u.email, da.scheduled_for
+        FROM delivery_attempts da
+        JOIN users u ON u.id = da.user_id
+        WHERE da.kind = 'digest'
+        ORDER BY u.email
+      `;
+      expect(attempts).toEqual([
+        {
+          email: "digest-amsterdam-summer@example.com",
+          scheduled_for: new Date("2026-07-13T06:00:00.000Z"),
+        },
+        {
+          email: "digest-amsterdam-winter@example.com",
+          scheduled_for: new Date("2026-01-12T07:00:00.000Z"),
+        },
+      ]);
     } finally {
       await close();
     }

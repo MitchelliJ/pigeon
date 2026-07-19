@@ -35,7 +35,7 @@ describe("migrate CLI main()", () => {
       try {
         const rows =
           await verify.query`SELECT count(*)::int AS n FROM schema_migrations`;
-        expect(rows[0]?.n).toBe(9);
+        expect(rows[0]?.n).toBe(11);
       } finally {
         await verify.close();
       }

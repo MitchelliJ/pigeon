@@ -227,7 +227,7 @@ describe("GET /api/dashboard", () => {
         "Sat",
         "Sun",
       ]);
-      expect(body.digest.timezone).toBe("UTC");
+      expect(body.digest.timezone).toBe("Europe/Amsterdam");
       expect(body.digest.lastSuccessfulDigestAt).toBeNull();
       expect(body.lastSync).toBe("Never");
     } finally {
@@ -534,11 +534,11 @@ describe("GET /api/dashboard", () => {
       `;
       await db.query`
         INSERT INTO delivery_settings(
-          user_id, mode, digest_time, digest_days, delivery_baseline_at,
-          last_digest_cutoff_at
+          user_id, mode, digest_time, digest_days, timezone,
+          delivery_baseline_at, last_digest_cutoff_at
         ) VALUES (
-          ${userId}, 'daily', '14:35', ${[1, 3, 7]}, ${createdAt},
-          ${lastDigestCutoffAt}
+          ${userId}, 'daily', '14:35', ${[1, 3, 7]}, 'Europe/London',
+          ${createdAt}, ${lastDigestCutoffAt}
         )
       `;
       await db.query`
@@ -581,7 +581,7 @@ describe("GET /api/dashboard", () => {
           mode: "daily",
           digestTime: "14:35",
           digestDays: ["Mon", "Wed", "Sun"],
-          timezone: "UTC",
+          timezone: "Europe/London",
           lastSuccessfulDigestAt: lastDigestCutoffAt.toISOString(),
         },
         containsStoredSecret: false,

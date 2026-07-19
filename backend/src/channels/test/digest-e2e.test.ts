@@ -158,6 +158,7 @@ describe("daily Discord digest e2e", () => {
         mode: "daily",
         digestTime: "08:00",
         digestDays: [3, 4],
+        timezone: "UTC",
       });
       await db.query`
         UPDATE delivery_settings

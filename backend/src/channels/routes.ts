@@ -1,5 +1,5 @@
 /*
- * Authenticated HTTP routes for channel connection and UTC delivery settings.
+ * Authenticated HTTP routes for channel connection and local delivery settings.
  * Handlers validate bounded input, delegate lifecycle work to the channel
  * service/store, and expose only redacted channel metadata.
  */
@@ -54,8 +54,15 @@ const deliverySettingsPatchSchema = z
       .min(1)
       .refine((days) => new Set(days).size === days.length)
       .optional(),
+    timezone: z
+      .string()
+      .min(1)
+      .max(255)
+      .regex(/^[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0);
 
 async function readJsonBody(c: Context): Promise<unknown> {
   try {
@@ -69,7 +76,7 @@ function publicSettings(settings: DeliverySettings): {
   mode: DeliverySettings["mode"];
   digestTime: string;
   digestDays: number[];
-  timezone: "UTC";
+  timezone: string;
 } {
   return {
     mode: settings.mode,

@@ -81,14 +81,15 @@ export const WEEKDAYS: Weekday[] = [
 /** Mutually exclusive delivery policies for channel notifications. */
 export type DeliveryMode = "daily" | "quiet";
 
-/** UTC delivery settings and the last successful daily digest state. */
+/** Local delivery settings and the last successful daily digest state. */
 export interface Digest {
   mode: DeliveryMode;
-  /** 24h UTC time string, e.g. "08:00". */
+  /** 24h wall-clock time interpreted in `timezone`, e.g. "08:00". */
   digestTime: string;
-  /** Days of the week the digest is sent. */
+  /** Local days of the week on which the digest is sent. */
   digestDays: readonly Weekday[];
-  timezone: "UTC";
+  /** IANA timezone identifier, e.g. "Europe/Amsterdam". */
+  timezone: string;
   lastSuccessfulDigestAt: string | null;
 }
 

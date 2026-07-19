@@ -27,7 +27,7 @@ type ExpectedDigest = {
   mode: "daily" | "quiet";
   digestTime: string;
   digestDays: readonly Weekday[];
-  timezone: "UTC";
+  timezone: string;
   lastSuccessfulDigestAt: string | null;
 };
 

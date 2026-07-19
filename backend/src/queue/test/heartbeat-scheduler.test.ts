@@ -22,6 +22,7 @@ async function insertOwner(
     channelStatus?: ChannelStatus;
     digestTime?: string;
     digestDays?: number[];
+    timezone?: string;
     baselineAt: Date;
   },
 ): Promise<Owner> {
@@ -44,12 +45,12 @@ async function insertOwner(
 
   await db.query`
     INSERT INTO delivery_settings(
-      user_id, mode, digest_time, digest_days, delivery_baseline_at
+      user_id, mode, digest_time, digest_days, timezone, delivery_baseline_at
     ) VALUES (
       ${userId}, ${options.mode ?? "quiet"},
       ${options.digestTime ?? "08:00"}::time,
       ${options.digestDays ?? [1, 2, 3, 4, 5, 6, 7]},
-      ${options.baselineAt}
+      ${options.timezone ?? "UTC"}, ${options.baselineAt}
     )
   `;
 

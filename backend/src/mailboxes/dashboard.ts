@@ -24,7 +24,7 @@
  * `stats` and `emails` are also real now: `stats` is the caller's classified
  * counts per category (Feature 6) and `emails` is the caller's first page of
  * `requires_action` mail (Feature 4/6), both read via the emails service.
- * `channel` and `digest` are the caller's redacted channel metadata and UTC
+ * `channel` and `digest` are the caller's redacted channel metadata and local
  * delivery settings (Feature 7).
  */
 import { Hono } from "hono";

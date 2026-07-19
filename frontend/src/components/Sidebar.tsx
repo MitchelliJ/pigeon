@@ -111,8 +111,13 @@ export default function Sidebar(props: {
   async function saveSchedule(
     time: string,
     days: Digest["digestDays"],
+    timezone: string,
   ): Promise<void> {
-    await deliverySettings.update({ digestTime: time, digestDays: days });
+    await deliverySettings.update({
+      digestTime: time,
+      digestDays: days,
+      timezone,
+    });
     props.onChanged();
   }
 
@@ -295,8 +300,8 @@ export default function Sidebar(props: {
                 <p class="digest-sub">
                   New requires-action emails are sent immediately. During quiet
                   stretches, Pigeon sends reassurance at{" "}
-                  {formatTime(props.digest.digestTime)} UTC on your selected
-                  days.
+                  {formatTime(props.digest.digestTime)} in{" "}
+                  {props.digest.timezone} on your selected days.
                 </p>
                 <button
                   class="digest-edit"
@@ -311,7 +316,8 @@ export default function Sidebar(props: {
               <span class="digest-icon">
                 <SendIcon />
               </span>
-              Daily digest at {formatTime(props.digest.digestTime)} UTC
+              Daily digest at {formatTime(props.digest.digestTime)} in{" "}
+              {props.digest.timezone}
             </h3>
             <p class="digest-sub">
               Only scheduled digests are sent. Last sent{" "}
@@ -343,8 +349,11 @@ export default function Sidebar(props: {
         open={isScheduleDialogOpen()}
         time={props.digest.digestTime}
         days={props.digest.digestDays}
+        timezone={props.digest.timezone}
         onClose={() => setIsScheduleDialogOpen(false)}
-        onSave={(time, days) => void saveSchedule(time, days)}
+        onSave={(time, days, timezone) =>
+          void saveSchedule(time, days, timezone)
+        }
       />
     </aside>
   );

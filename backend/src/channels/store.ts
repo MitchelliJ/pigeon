@@ -39,7 +39,7 @@ export interface DeliverySettings {
   mode: DeliveryMode;
   digestTime: string;
   digestDays: number[];
-  timezone: "UTC";
+  timezone: string;
   deliveryBaselineAt: Date;
   lastDigestCutoffAt: Date | null;
 }
@@ -60,6 +60,7 @@ export async function getDeliverySettings(
       mode,
       digest_time,
       digest_days,
+      timezone,
       delivery_baseline_at,
       last_digest_cutoff_at
     FROM delivery_settings
@@ -115,7 +116,7 @@ function mapDeliverySettings(row: Record<string, unknown>): DeliverySettings {
     digestDays: Array.isArray(row.digest_days)
       ? row.digest_days.map((day) => Number(day))
       : [],
-    timezone: "UTC",
+    timezone: String(row.timezone),
     deliveryBaselineAt: toDate(row.delivery_baseline_at),
     lastDigestCutoffAt:
       row.last_digest_cutoff_at === null

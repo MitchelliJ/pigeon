@@ -156,31 +156,31 @@ export async function scheduleQuietHeartbeats(
          AND c.status = 'active'
         CROSS JOIN LATERAL (
           SELECT
-            (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
+            (days.local_day::date + ds.digest_time) AT TIME ZONE ds.timezone
               AS scheduled_for
           FROM generate_series(
-            date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC')
+            date_trunc('day', ${now}::timestamptz AT TIME ZONE ds.timezone)
               - INTERVAL '7 days',
-            date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC'),
+            date_trunc('day', ${now}::timestamptz AT TIME ZONE ds.timezone),
             INTERVAL '1 day'
-          ) AS days(utc_day)
-          WHERE EXTRACT(ISODOW FROM days.utc_day)::smallint
+          ) AS days(local_day)
+          WHERE EXTRACT(ISODOW FROM days.local_day)::smallint
                   = ANY(ds.digest_days)
-            AND (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
-                  <= ${now}
+            AND (days.local_day::date + ds.digest_time)
+                  AT TIME ZONE ds.timezone <= ${now}
           ORDER BY scheduled_for DESC
           LIMIT 1
         ) due
         CROSS JOIN LATERAL (
           SELECT
-            (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
+            (days.local_day::date + ds.digest_time) AT TIME ZONE ds.timezone
               AS scheduled_for
           FROM generate_series(
-            (due.scheduled_for AT TIME ZONE 'UTC')::date - INTERVAL '7 days',
-            (due.scheduled_for AT TIME ZONE 'UTC')::date - INTERVAL '1 day',
+            (due.scheduled_for AT TIME ZONE ds.timezone)::date - INTERVAL '7 days',
+            (due.scheduled_for AT TIME ZONE ds.timezone)::date - INTERVAL '1 day',
             INTERVAL '1 day'
-          ) AS days(utc_day)
-          WHERE EXTRACT(ISODOW FROM days.utc_day)::smallint
+          ) AS days(local_day)
+          WHERE EXTRACT(ISODOW FROM days.local_day)::smallint
                   = ANY(ds.digest_days)
           ORDER BY scheduled_for DESC
           LIMIT 1
@@ -231,7 +231,7 @@ export async function scheduleQuietHeartbeats(
 }
 
 /**
- * Close the latest due UTC digest window into an immutable attempt snapshot.
+ * Close the latest due user-local digest window into an immutable snapshot.
  * The attempt's unique index elects one concurrent scheduler; only that winner
  * writes items and a delivery job. Successful delivery advances the cutoff.
  */
@@ -254,18 +254,18 @@ export async function scheduleDailyDigests(db: Db, now: Date): Promise<void> {
          AND c.status = 'active'
         CROSS JOIN LATERAL (
           SELECT
-            (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
+            (days.local_day::date + ds.digest_time) AT TIME ZONE ds.timezone
               AS scheduled_for
           FROM generate_series(
-            date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC')
+            date_trunc('day', ${now}::timestamptz AT TIME ZONE ds.timezone)
               - INTERVAL '7 days',
-            date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC'),
+            date_trunc('day', ${now}::timestamptz AT TIME ZONE ds.timezone),
             INTERVAL '1 day'
-          ) AS days(utc_day)
-          WHERE EXTRACT(ISODOW FROM days.utc_day)::smallint
+          ) AS days(local_day)
+          WHERE EXTRACT(ISODOW FROM days.local_day)::smallint
                   = ANY(ds.digest_days)
-            AND (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
-                  <= ${now}
+            AND (days.local_day::date + ds.digest_time)
+                  AT TIME ZONE ds.timezone <= ${now}
           ORDER BY scheduled_for DESC
           LIMIT 1
         ) due

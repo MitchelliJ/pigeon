@@ -277,7 +277,7 @@ describe("channel routes", () => {
 });
 
 describe("delivery settings routes", () => {
-  it("requires auth and returns UTC defaults", async () => {
+  it("requires auth and returns Amsterdam defaults", async () => {
     const { db, app, close } = await harness();
     try {
       const { cookie } = await createSession(db, "settings@example.com");
@@ -296,7 +296,7 @@ describe("delivery settings routes", () => {
           settings: expect.objectContaining({
             mode: "daily",
             digestTime: "08:00",
-            timezone: "UTC",
+            timezone: "Europe/Amsterdam",
           }),
         },
       });
@@ -325,7 +325,7 @@ describe("delivery settings routes", () => {
     }
   });
 
-  it("validates delivery patches and returns a successful UTC update", async () => {
+  it("validates delivery patches and updates the timezone", async () => {
     const { db, app, close } = await harness();
     try {
       const { cookie } = await createSession(db, "settings-update@example.com");
@@ -341,6 +341,7 @@ describe("delivery settings routes", () => {
           mode: "quiet",
           digestTime: "09:30",
           digestDays: [1, 3, 5],
+          timezone: "Europe/London",
         }),
       });
       expect({
@@ -358,7 +359,7 @@ describe("delivery settings routes", () => {
               mode: "quiet",
               digestTime: "09:30",
               digestDays: [1, 3, 5],
-              timezone: "UTC",
+              timezone: "Europe/London",
             }),
           },
         ],
