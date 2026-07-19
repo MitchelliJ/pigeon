@@ -312,7 +312,12 @@ describe("pop3 connector — listMessageIds/fetchMessages", () => {
     }
   });
 
-  it("fetchMessages with opts.since TOP-peeks headers and excludes ids older than since from the result", async () => {
+  // PRD "Sync Backfill Date Alignment" FR-6: the POP3 connector must stop
+  // filtering in-connector — it returns every requested id and the sync
+  // engine drops out-of-window messages post-parse. The two tests below
+  // pin the NEW contract (RED against the current connector, which still
+  // TOP-peeks and excludes uid-3).
+  it("pop3 connector fetchMessages returns all requested ids ignoring opts.since", async () => {
     const server = await startFakePop3Server({
       username: USERNAME,
       password: PASSWORD,
@@ -338,9 +343,48 @@ describe("pop3 connector — listMessageIds/fetchMessages", () => {
       if (!result.ok) return;
 
       const ids = result.messages.map((m) => m.providerUid).sort();
-      // uid-3 (30 days ago) is outside the 7-day window and must be
-      // silently excluded, not returned as an error.
-      expect(ids).toEqual(["uid-1", "uid-2"]);
+      // uid-3 (30 days ago) is outside the 7-day window but must still be
+      // returned to the engine — the connector no longer filters; the
+      // engine drops it post-parse (FR-6).
+      expect(ids).toEqual(["uid-1", "uid-2", "uid-3"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("pop3 connector fetchMessages issues no TOP command when opts.since is supplied", async () => {
+    const server = await startFakePop3Server({
+      username: USERNAME,
+      password: PASSWORD,
+    });
+    try {
+      const connector = getConnector("pop3");
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+      const result = await connector.fetchMessages(
+        {
+          host: "localhost",
+          port: server.port,
+          tls: true,
+          username: USERNAME,
+          password: PASSWORD,
+          caCert: fakeServerCertPem,
+        },
+        ["uid-1", "uid-2", "uid-3"],
+        { since: sevenDaysAgo },
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // POP3 must no longer peek headers via `TOP <n> 0` to filter
+      // in-connector: with `opts.since` supplied and at least one message
+      // older than `since` present, NOT ONE `TOP` command may appear on the
+      // wire (FR-6).
+      const topCommands = server.commands.filter((c) =>
+        /^TOP\s+\d+\s+0\s*$/i.test(c),
+      );
+      expect(topCommands).toEqual([]);
     } finally {
       await server.close();
     }

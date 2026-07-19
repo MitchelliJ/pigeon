@@ -223,6 +223,14 @@ function buildPop3FixtureMessages(): Pop3FixtureMessage[] {
  */
 export type FakePop3ServerHandle = FakeServerHandle & {
   messages: Pop3FixtureMessage[];
+  /**
+   * Running log of every raw command line received by this server instance
+   * (one entry per CRLF-terminated line, captured before dispatch) — tests
+   * assert on it to verify which wire commands a connector did/didn't issue
+   * (PRD "Sync Backfill Date Alignment" FR-6: POP3 must no longer send
+   * `TOP <n> 0` once it stops filtering in-connector).
+   */
+  commands: string[];
 };
 
 /**
@@ -248,12 +256,20 @@ export function startFakePop3Server(opts: {
   const messageSize = (m: Pop3FixtureMessage): number =>
     m.headers.length + 4 + m.body.length;
 
+  /** Running log of raw command lines received by this server instance. */
+  const commands: string[] = [];
+
   const serverPromise = createTlsFakeServer((socket) => {
     socket.write("+OK POP3 fake ready\r\n");
     let userMatched = false;
     let loggedIn = false;
 
     lineReader(socket, (line) => {
+      // Record every raw command line before dispatching, so tests can
+      // assert on the exact wire-level command sequence (e.g. "no TOP was
+      // issued").
+      commands.push(line);
+
       const userMatch = /^USER\s+(\S+)\s*$/i.exec(line);
       if (userMatch) {
         userMatched = userMatch[1] === opts.username;
@@ -341,7 +357,7 @@ export function startFakePop3Server(opts: {
     });
   });
 
-  return serverPromise.then((handle) => ({ ...handle, messages }));
+  return serverPromise.then((handle) => ({ ...handle, messages, commands }));
 }
 
 /**

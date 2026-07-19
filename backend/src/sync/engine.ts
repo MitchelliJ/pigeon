@@ -3,11 +3,22 @@
  * FR-6..FR-8). `syncMailbox` is the one entry point a job (or a manual
  * "sync now" trigger) calls to pull new messages for a single mailbox: it
  * loads the mailbox's connection details, asks the mailbox's
- * `MailboxConnector` for the current server-side id list (capped to the last
- * 7 days on a mailbox's very first sync, since `last_synced_at` is the
- * watermark that tells us whether this is a first sync at all), diffs that
- * list against what's already stored in `emails`, fetches only the genuinely
- * new ids, and inserts them.
+ * `MailboxConnector` for the current server-side id list, diffs that list
+ * against what's already stored in `emails`, fetches only the genuinely new
+ * ids, and inserts them.
+ *
+ * Canonical-timestamp invariant (PRD FR-1): `emails.received_at` — the parsed
+ * `Date:` RFC822 header — is the single email timestamp Pigeon reasons about.
+ * It drives selection, sort, classify-enqueue, and digest ranking. The engine
+ * computes one cutoff per sync run and applies it post-parse authoritatively;
+ * the `opts.since` value forwarded to connectors is an advisory coarse
+ * pre-filter only (e.g. IMAP's `SEARCH SINCE`) and never the final word.
+ *
+ * Cutoff policy: a mailbox's very first sync (`last_synced_at IS NULL`) starts
+ * the cutoff 7 days ago so the initial backfill window is bounded; every
+ * subsequent incremental sync starts the cutoff at `last_synced_at`. Because
+ * it is an inclusive `>=` comparison, re-runs safely re-pick up messages that
+ * arrived within the same watermark tick.
  *
  * Dedup is enforced by the `emails (mailbox_id, provider_uid)` unique
  * constraint (0005_emails.sql) via `ON CONFLICT DO NOTHING` — the diff
@@ -18,12 +29,14 @@
  *
  * A connector-level failure (bad credentials, dropped connection, …) never
  * throws out of this function — it's reported back as `{ ok: false, reason }`
- * and the mailbox is marked `status = 'error'`, leaving `last_synced_at`
- * untouched so the next attempt still knows how far back to look.
+ * and the mailbox is marked `status = 'error'`. On a mailbox's first sync
+ * attempt, `last_synced_at` is also set so the historical window does not
+ * retry forever; later failures leave the existing watermark unchanged.
  */
 import type { Db } from "../db/index";
 import type { Vault } from "../vault/index";
 import type {
+  FetchedMessage,
   MailboxConnector,
   TestConnectionParams,
 } from "../mailboxes/connectors/types";
@@ -44,10 +57,56 @@ interface MailboxRow {
   last_synced_at: Date | null;
 }
 
-/** Mark `mailboxId` as failed without disturbing its `last_synced_at`. */
-async function markError(db: Db, mailboxId: string): Promise<void> {
+/** Mark `mailboxId` as failed, locking the watermark on first attempt only. */
+async function markError(
+  db: Db,
+  mailboxId: string,
+  isFirstSyncAttempt: boolean,
+): Promise<void> {
+  if (isFirstSyncAttempt) {
+    await db.query`
+      UPDATE mailboxes SET status = 'error', last_synced_at = now()
+      WHERE id = ${mailboxId}`;
+    return;
+  }
+
   await db.query`
     UPDATE mailboxes SET status = 'error' WHERE id = ${mailboxId}`;
+}
+
+interface SyncCutoffPolicy {
+  /** Authoritative post-parse cutoff for the canonical `received_at` timestamp (PRD FR-1). */
+  receivedAtCutoff: Date;
+  /** Advisory coarse pre-filter forwarded to connectors; omitted for incremental syncs. */
+  connectorSince?: Date;
+}
+
+/** First-sync cutoff: 7 days ago (bounded initial backfill window, FR-8). */
+function getFirstSyncCutoff(): Date {
+  return new Date(Date.now() - FIRST_SYNC_LOOKBACK_MS);
+}
+
+/**
+ * One cutoff policy per sync run, per FR-1/FR-8:
+ * - first sync  (`last_synced_at IS NULL`): cutoff = 7 days ago, forwarded to connectors as a backfill advisory.
+ * - incremental (`last_synced_at` set):       cutoff = `last_synced_at`, not forwarded — connectors return the full id
+ *   list and the engine filters post-parse authoritatively.
+ */
+function getSyncCutoffPolicy(lastSyncedAt: Date | null): SyncCutoffPolicy {
+  if (lastSyncedAt === null) {
+    const firstSyncCutoff = getFirstSyncCutoff();
+    return {
+      receivedAtCutoff: firstSyncCutoff,
+      connectorSince: firstSyncCutoff,
+    };
+  }
+
+  return { receivedAtCutoff: lastSyncedAt };
+}
+
+/** Authoritative post-parse filter against the canonical `received_at` (PRD FR-1). */
+function isMessageAfterCutoff(message: FetchedMessage, cutoff: Date): boolean {
+  return message.receivedAt.getTime() >= cutoff.getTime();
 }
 
 /**
@@ -85,16 +144,16 @@ export async function syncMailbox(
   await db.query`
     UPDATE mailboxes SET status = 'syncing' WHERE id = ${mailboxId}`;
 
-  const isFirstSync = row.last_synced_at === null;
-  const since = isFirstSync
-    ? new Date(Date.now() - FIRST_SYNC_LOOKBACK_MS)
-    : undefined;
+  const isFirstSyncAttempt = row.last_synced_at === null;
+  const cutoffPolicy = getSyncCutoffPolicy(row.last_synced_at);
 
-  const listResult = isFirstSync
-    ? await connector.listMessageIds(params, { since })
+  const listResult = cutoffPolicy.connectorSince
+    ? await connector.listMessageIds(params, {
+        since: cutoffPolicy.connectorSince,
+      })
     : await connector.listMessageIds(params);
   if (!listResult.ok) {
-    await markError(db, mailboxId);
+    await markError(db, mailboxId, isFirstSyncAttempt);
     return { ok: false, reason: listResult.reason };
   }
 
@@ -105,15 +164,21 @@ export async function syncMailbox(
 
   let insertedCount = 0;
   if (newIds.length > 0) {
-    const fetchResult = isFirstSync
-      ? await connector.fetchMessages(params, newIds, { since })
+    const fetchResult = cutoffPolicy.connectorSince
+      ? await connector.fetchMessages(params, newIds, {
+          since: cutoffPolicy.connectorSince,
+        })
       : await connector.fetchMessages(params, newIds);
     if (!fetchResult.ok) {
-      await markError(db, mailboxId);
+      await markError(db, mailboxId, isFirstSyncAttempt);
       return { ok: false, reason: fetchResult.reason };
     }
 
-    for (const message of fetchResult.messages) {
+    const messages = fetchResult.messages.filter((message) =>
+      isMessageAfterCutoff(message, cutoffPolicy.receivedAtCutoff),
+    );
+
+    for (const message of messages) {
       const inserted = await db.query`
         INSERT INTO emails (
           mailbox_id, provider_uid, seen, from_name, from_address,

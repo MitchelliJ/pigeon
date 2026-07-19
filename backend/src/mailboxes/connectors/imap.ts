@@ -136,8 +136,10 @@ export function createImapConnector(
     },
 
     async fetchMessages(params, ids, _opts): Promise<FetchMessagesResult> {
-      // `_opts.since` is ignored here — IMAP already scoped `ids` via
-      // `SEARCH SINCE` at `listMessageIds` time (see types.ts).
+      // `_opts.since` is ignored here — IMAP's `SEARCH SINCE` at
+      // `listMessageIds` time was only a coarse advisory pre-filter; the
+      // sync engine applies the authoritative post-parse `receivedAt`
+      // cutoff (engine.ts, PRD FR-1).
       const client = clientFactory(params);
       try {
         await client.connect();

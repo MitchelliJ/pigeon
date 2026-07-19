@@ -4,7 +4,14 @@
  * §3.2, FR-1/FR-3/FR-4/FR-8/FR-9). No POP3 library dependency: opens an
  * implicit-TLS socket and logs in via USER/PASS, then either quits right away
  * (`testConnection`, just confirming the credentials work) or issues
- * `UIDL`/`TOP`/`RETR` to list and fetch messages.
+ * `UIDL`/`RETR` to list and fetch messages.
+ *
+ * Note on filtering: this connector USED to issue `TOP <n> 0` to peek headers
+ * and exclude pre-`opts.since` messages in-connector (PRD "Incremental Sync
+ * Engine" FR-8). PRD "Sync Backfill Date Alignment" FR-6 moved that
+ * filtering to the sync engine; `fetchMessages` now RETRs every requested
+ * id unconditionally — `opts.since` is accepted for signature compatibility
+ * but unused at the connector layer.
  */
 
 import type { TLSSocket } from "node:tls";
@@ -112,19 +119,6 @@ function parseUidlLine(
   return { msgnum: Number(msgnum), uidl };
 }
 
-/**
- * Scans a `TOP <n> 0` response's header lines for `Date:` and parses it, for
- * the FR-8 first-sync peek-and-filter (cheaper than a full `mailparser` pass
- * just to read one header).
- */
-function parseDateHeader(headerLines: string[]): Date | undefined {
-  const dateLine = headerLines.find((line) => /^date:/i.test(line));
-  if (!dateLine) return undefined;
-  const value = dateLine.slice(dateLine.indexOf(":") + 1).trim();
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
-}
-
 /** Builds a `uidl -> msgnum` map from a successful `UIDL` response's lines. */
 function buildMsgnumByUidl(lines: string[]): Map<string, number> {
   const msgnumByUidl = new Map<string, number>();
@@ -176,7 +170,9 @@ export const pop3Connector: MailboxConnector = {
 
   listMessageIds(params) {
     // `since` (first-sync history cap, FR-8) is ignored here — POP3 has no
-    // server-side date filter, so `fetchMessages` applies it instead.
+    // server-side date filter, and per PRD "Sync Backfill Date Alignment"
+    // FR-6 the connector no longer filters anywhere; the sync engine drops
+    // out-of-window messages post-parse instead.
     return withPop3Login<ListMessageIdsResult>(
       params,
       async (socket, setLineHandler, finish) => {
@@ -210,12 +206,12 @@ export const pop3Connector: MailboxConnector = {
     );
   },
 
-  fetchMessages(params, ids, opts) {
+  fetchMessages(params, ids, _opts) {
     return withPop3Login<FetchMessagesResult>(
       params,
       async (socket, setLineHandler, finish) => {
         try {
-          // RETR/TOP address messages by sequence number, not UIDL, so a
+          // RETR addresses messages by sequence number, not UIDL, so a
           // `uidl -> msgnum` map is built up front from one `UIDL` call.
           const uidlResult = await sendBlockCommand(
             socket,
@@ -236,24 +232,10 @@ export const pop3Connector: MailboxConnector = {
             // rather than erroring the whole batch.
             if (msgnum === undefined) continue;
 
-            if (opts?.since) {
-              const topResult = await sendBlockCommand(
-                socket,
-                setLineHandler,
-                `TOP ${msgnum} 0`,
-              );
-              if (topResult.ok) {
-                const headerDate = parseDateHeader(topResult.lines);
-                if (headerDate && headerDate < opts.since) {
-                  // Excluded before ever issuing RETR for it (FR-8).
-                  continue;
-                }
-              }
-              // If TOP isn't supported either (rare), fall through to
-              // RETR-then-filter below — an accepted one-time inefficiency
-              // for the first sync only (FR-8).
-            }
-
+            // PRD "Sync Backfill Date Alignment" FR-6: the connector no longer
+            // filters by `opts.since` — every requested id is RETR'd
+            // unconditionally and returned; the sync engine drops
+            // out-of-window messages post-parse.
             const retrResult = await sendBlockCommand(
               socket,
               setLineHandler,
@@ -268,11 +250,6 @@ export const pop3Connector: MailboxConnector = {
               providerUid,
               retrResult.lines.join("\r\n"),
             );
-            if (opts?.since && message.receivedAt < opts.since) {
-              // TOP was unsupported above; only known here after paying for
-              // the full RETR (FR-8's documented fallback).
-              continue;
-            }
             messages.push(message);
           }
 

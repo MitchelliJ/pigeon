@@ -126,7 +126,7 @@ describe("syncMailbox", () => {
             fromAddress: "alice@example.com",
             subject: "Subject A",
             body: "Body A",
-            receivedAt: new Date("2026-07-01T00:00:00Z"),
+            receivedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
             seen: false,
           },
           {
@@ -135,7 +135,7 @@ describe("syncMailbox", () => {
             fromAddress: "bob@example.com",
             subject: "Subject B",
             body: "Body B",
-            receivedAt: new Date("2026-07-02T00:00:00Z"),
+            receivedAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
             seen: true,
           },
         ],
@@ -189,6 +189,122 @@ describe("syncMailbox", () => {
     }
   });
 
+  it("first sync with zero in-window messages inserts nothing but still marks the mailbox connected and sets last_synced_at", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "zeroinwindow@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "zeroinwindow-mb@example.com",
+      );
+
+      const fake = createFakeConnector();
+      fake.listMessageIdsResult = { ok: true, ids: ["old-1", "old-2"] };
+      fake.fetchMessagesResult = {
+        ok: true,
+        messages: [
+          {
+            providerUid: "old-1",
+            fromName: "Old One",
+            fromAddress: "old1@example.com",
+            subject: "Old 1",
+            body: "Old body 1",
+            receivedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+            seen: false,
+          },
+          {
+            providerUid: "old-2",
+            fromName: "Old Two",
+            fromAddress: "old2@example.com",
+            subject: "Old 2",
+            body: "Old body 2",
+            receivedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+            seen: true,
+          },
+        ],
+      };
+
+      await syncMailbox(db, vault, fake, mailboxId);
+
+      const emailRows = await db.query`
+        SELECT provider_uid FROM emails WHERE mailbox_id = ${mailboxId}`;
+      const mailboxRows = await db.query`
+        SELECT status, last_synced_at FROM mailboxes WHERE id = ${mailboxId}`;
+
+      expect(emailRows.length).toBe(0);
+      expect(mailboxRows[0]?.status).toBe("connected");
+      expect(mailboxRows[0]?.last_synced_at).toBeInstanceOf(Date);
+    } finally {
+      await close();
+    }
+  });
+
+  it("first sync filters fetched messages by received_at cutoff", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "cutoff@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "cutoff-mb@example.com",
+      );
+
+      const fake = createFakeConnector();
+      fake.listMessageIdsResult = { ok: true, ids: ["too-old", "in-window"] };
+      fake.fetchMessagesResult = {
+        ok: true,
+        messages: [
+          {
+            providerUid: "too-old",
+            fromName: "Old",
+            fromAddress: "old@example.com",
+            subject: "Old subject",
+            body: "Old body",
+            receivedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+            seen: false,
+          },
+          {
+            providerUid: "in-window",
+            fromName: "New",
+            fromAddress: "new@example.com",
+            subject: "New subject",
+            body: "New body",
+            receivedAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+            seen: false,
+          },
+        ],
+      };
+
+      await syncMailbox(db, vault, fake, mailboxId);
+
+      const emailRows = await db.query`
+        SELECT provider_uid FROM emails
+        WHERE mailbox_id = ${mailboxId}
+        ORDER BY provider_uid`;
+      const mailboxRows = await db.query`
+        SELECT status, last_synced_at FROM mailboxes WHERE id = ${mailboxId}`;
+
+      expect({
+        providerUids: emailRows.map((row) => row.provider_uid),
+        status: mailboxRows[0]?.status,
+        lastSyncedAtSet: mailboxRows[0]?.last_synced_at instanceof Date,
+      }).toEqual({
+        providerUids: ["in-window"],
+        status: "connected",
+        lastSyncedAtSet: true,
+      });
+    } finally {
+      await close();
+    }
+  });
+
   it("incremental sync (mailbox already synced before) omits the since bound", async () => {
     const { db, close } = await withTestDb();
     try {
@@ -212,6 +328,64 @@ describe("syncMailbox", () => {
 
       expect(fake.listMessageIdsCalls.length).toBe(1);
       expect(fake.listMessageIdsCalls[0]?.opts?.since).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  it("incremental sync filters fetched messages by last_synced_at", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "watermark@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "watermark-mb@example.com",
+      );
+      const lastSyncedAt = new Date("2026-07-10T12:00:00.000Z");
+      await db.query`
+        UPDATE mailboxes SET last_synced_at = ${lastSyncedAt}
+        WHERE id = ${mailboxId}`;
+
+      const fake = createFakeConnector();
+      fake.listMessageIdsResult = {
+        ok: true,
+        ids: ["before-watermark", "after-watermark"],
+      };
+      fake.fetchMessagesResult = {
+        ok: true,
+        messages: [
+          {
+            providerUid: "before-watermark",
+            fromName: "Before",
+            fromAddress: "before@example.com",
+            subject: "Before subject",
+            body: "Before body",
+            receivedAt: new Date("2026-07-10T11:59:59.000Z"),
+            seen: false,
+          },
+          {
+            providerUid: "after-watermark",
+            fromName: "After",
+            fromAddress: "after@example.com",
+            subject: "After subject",
+            body: "After body",
+            receivedAt: new Date("2026-07-10T12:00:01.000Z"),
+            seen: false,
+          },
+        ],
+      };
+
+      await syncMailbox(db, vault, fake, mailboxId);
+
+      const rows = await db.query`
+        SELECT provider_uid FROM emails
+        WHERE mailbox_id = ${mailboxId}
+        ORDER BY provider_uid`;
+      expect(rows.map((row) => row.provider_uid)).toEqual(["after-watermark"]);
     } finally {
       await close();
     }
@@ -364,7 +538,50 @@ describe("syncMailbox", () => {
     }
   });
 
-  it("a connector failure sets status='error' and leaves last_synced_at unchanged", async () => {
+  it("sets last_synced_at on first sync failure", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "first-failure@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "first-failure-mb@example.com",
+      );
+
+      const fake = createFakeConnector();
+      fake.listMessageIdsResult = { ok: false, reason: "boom" };
+
+      const attemptStartedAt = new Date();
+      const result = await syncMailbox(db, vault, fake, mailboxId);
+      const attemptFinishedAt = new Date();
+
+      const rows = await db.query`
+        SELECT status, last_synced_at FROM mailboxes WHERE id = ${mailboxId}`;
+      const lastSyncedAt = rows[0]?.last_synced_at as Date | null;
+
+      expect({
+        resultOk: result.ok,
+        status: rows[0]?.status,
+        lastSyncedAtSet: lastSyncedAt instanceof Date,
+        lastSyncedAtNearAttempt:
+          lastSyncedAt instanceof Date &&
+          lastSyncedAt.getTime() >= attemptStartedAt.getTime() - 1_000 &&
+          lastSyncedAt.getTime() <= attemptFinishedAt.getTime() + 1_000,
+      }).toEqual({
+        resultOk: false,
+        status: "error",
+        lastSyncedAtSet: true,
+        lastSyncedAtNearAttempt: true,
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("already-synced connector failure sets status='error' and leaves last_synced_at unchanged", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -392,6 +609,50 @@ describe("syncMailbox", () => {
       expect((rows[0]?.last_synced_at as Date).getTime()).toBe(
         fixedTimestamp.getTime(),
       );
+    } finally {
+      await close();
+    }
+  });
+
+  it("first sync failure does not re-arm as a first sync on the next attempt", async () => {
+    // Regression/baseline pin for the "no forever-loop" invariant: a
+    // first-attempt connector failure sets last_synced_at (task-3 GREEN), so
+    // the next syncMailbox call on that mailbox must NOT be treated as a
+    // first sync — the connector must be called WITHOUT the seven-days-ago
+    // `opts.since` cutoff. The mailbox is now incremental.
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "first-failure-rearm@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "first-failure-rearm-mb@example.com",
+      );
+
+      // First attempt: connector fails. Must mark last_synced_at so the
+      // historical window does not get re-armed forever.
+      const failingFake = createFakeConnector();
+      failingFake.listMessageIdsResult = { ok: false, reason: "boom" };
+      const firstResult = await syncMailbox(db, vault, failingFake, mailboxId);
+      expect(firstResult.ok).toBe(false);
+      const afterFailure = await db.query`
+        SELECT status, last_synced_at FROM mailboxes WHERE id = ${mailboxId}`;
+      expect(afterFailure[0]?.status).toBe("error");
+      expect(afterFailure[0]?.last_synced_at).toBeInstanceOf(Date);
+
+      // Second attempt on the SAME mailbox with a NEW connector instance that
+      // succeeds with an empty id list. Because last_synced_at is now set,
+      // this is an incremental sync — the connector must NOT receive the
+      // seven-days-ago `opts.since` backfill cutoff.
+      const okFake = createFakeConnector();
+      okFake.listMessageIdsResult = { ok: true, ids: [] };
+      await syncMailbox(db, vault, okFake, mailboxId);
+
+      expect(okFake.listMessageIdsCalls.length).toBe(1);
+      expect(okFake.listMessageIdsCalls[0]?.opts?.since).toBeUndefined();
     } finally {
       await close();
     }

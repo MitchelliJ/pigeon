@@ -65,10 +65,13 @@ export type FetchMessagesResult =
 export interface MailboxConnector {
   testConnection(params: TestConnectionParams): Promise<TestConnectionResult>;
   /**
-   * Every `provider_uid` currently in the mailbox. `opts.since` (first-sync
-   * history cap only, FR-8) lets IMAP filter server-side; POP3 has no
-   * server-side date filter and ignores it here (filtering happens in
-   * `fetchMessages` instead).
+   * Every `provider_uid` currently in the mailbox. `opts.since` is an
+   * **advisory coarse pre-filter** a connector may apply cheaply server-side —
+   * IMAP forwards it to `SEARCH SINCE`; POP3 has no server-side date filter
+   * and ignores it entirely. It is **not** authoritative: the sync engine
+   * applies the real `receivedAt` cutoff post-parse (engine.ts), derived from
+   * the canonical `Date:` RFC822 header (`emails.received_at`, PRD FR-1 — the
+   * single email timestamp Pigeon reasons about).
    */
   listMessageIds(
     params: TestConnectionParams,
@@ -76,11 +79,13 @@ export interface MailboxConnector {
   ): Promise<ListMessageIdsResult>;
   /**
    * Fetches and MIME-parses full content for exactly the requested
-   * `providerUid`s (never re-fetches ids the caller already has stored —
-   * that filtering happens in the sync engine). `opts.since` mirrors
-   * `listMessageIds`'s option and drives POP3's `TOP`-then-`RETR`
-   * peek-and-filter (FR-8); IMAP ignores it here since it already scoped the
-   * id list via `SEARCH SINCE` at `listMessageIds` time.
+   * `providerUid`s (never re-fetches ids the caller already has stored — that
+   * diffing happens in the sync engine). `opts.since` is the same advisory
+   * coarse pre-filter as `listMessageIds` — connectors that already applied
+   * it server-side (IMAP) ignore it here, and POP3 ignores it entirely. The
+   * authoritative `receivedAt` cutoff is applied post-parse by the sync
+   * engine against the canonical `Date:` RFC822 header (`emails.received_at`,
+   * PRD FR-1).
    */
   fetchMessages(
     params: TestConnectionParams,
