@@ -17,6 +17,7 @@ import { runMigrations } from "../../migrate/runner";
 import {
   enqueueSyncJob,
   enqueueClassifyJob,
+  enqueueDeliveryJob,
   claimJobs,
   completeJob,
   failJob,
@@ -56,6 +57,31 @@ async function insertEmail(db: Db, mailboxId: string): Promise<string> {
     ) VALUES (
       ${mailboxId}, ${"uid-1"}, ${false}, ${"Alice"}, ${"alice@example.com"},
       ${"Hello"}, ${"Body text"}, ${new Date("2026-01-01T00:00:00Z")}
+    ) RETURNING id`;
+  return String(rows[0]?.id);
+}
+
+async function insertChannel(db: Db, userId: string): Promise<string> {
+  const rows = await db.query`
+    INSERT INTO channels(user_id, kind, config_encrypted, status, last_tested_at)
+    VALUES (${userId}, 'discord', 'sealed', 'active', now())
+    RETURNING id`;
+  return String(rows[0]?.id);
+}
+
+async function insertDeliveryAttempt(
+  db: Db,
+  userId: string,
+  channelId: string,
+): Promise<string> {
+  const rows = await db.query`
+    INSERT INTO delivery_attempts(
+      user_id, channel_id, kind, scheduled_for, window_start, window_end, status
+    ) VALUES (
+      ${userId}, ${channelId}, 'digest',
+      ${new Date("2026-01-02T08:00:00Z")},
+      ${new Date("2026-01-01T08:00:00Z")},
+      ${new Date("2026-01-02T08:00:00Z")}, 'pending'
     ) RETURNING id`;
   return String(rows[0]?.id);
 }
@@ -223,6 +249,86 @@ describe("queue store", () => {
     } finally {
       await close();
     }
+  });
+
+  describe("enqueueDeliveryJob", () => {
+    it("inserts one pending deliver_channel job per delivery attempt under repeated calls", async () => {
+      const { db, close } = await withTestDb();
+      try {
+        await runMigrations(db);
+        const userId = await insertUser(db, "deliver-enqueue@example.com");
+        const channelId = await insertChannel(db, userId);
+        const deliveryAttemptId = await insertDeliveryAttempt(
+          db,
+          userId,
+          channelId,
+        );
+
+        await enqueueDeliveryJob(db, deliveryAttemptId);
+        await enqueueDeliveryJob(db, deliveryAttemptId);
+
+        const rows = await db.query`
+          SELECT type, payload, status
+          FROM jobs
+          WHERE payload->>'deliveryAttemptId' = ${deliveryAttemptId}`;
+        expect(rows).toEqual([
+          {
+            type: "deliver_channel",
+            payload: { deliveryAttemptId },
+            status: "pending",
+          },
+        ]);
+      } finally {
+        await close();
+      }
+    });
+
+    it("participates in the existing claim, fail, reclaim, and complete flow", async () => {
+      const { db, close } = await withTestDb();
+      try {
+        await runMigrations(db);
+        const userId = await insertUser(db, "deliver-flow@example.com");
+        const channelId = await insertChannel(db, userId);
+        const deliveryAttemptId = await insertDeliveryAttempt(
+          db,
+          userId,
+          channelId,
+        );
+        await enqueueDeliveryJob(db, deliveryAttemptId);
+
+        const firstClaim = (await claimJobs(db, 1))[0];
+        expect(firstClaim).toMatchObject({
+          type: "deliver_channel",
+          payload: { deliveryAttemptId },
+          status: "running",
+          attempts: 1,
+        });
+        if (!firstClaim) throw new Error("Expected delivery job to be claimed");
+
+        await failJob(
+          db,
+          firstClaim.id,
+          "retry delivery",
+          firstClaim.attempts,
+          firstClaim.maxAttempts,
+        );
+        await db.query`
+          UPDATE jobs SET run_at = now() WHERE id = ${firstClaim.id}`;
+
+        const secondClaim = (await claimJobs(db, 1))[0];
+        if (!secondClaim)
+          throw new Error("Expected delivery job to be reclaimed");
+        await completeJob(db, secondClaim.id, secondClaim.attempts);
+
+        const rows = await db.query`
+          SELECT status, attempts, last_error FROM jobs WHERE id = ${secondClaim.id}`;
+        expect(rows).toEqual([
+          { status: "succeeded", attempts: 2, last_error: "retry delivery" },
+        ]);
+      } finally {
+        await close();
+      }
+    });
   });
 
   it("claimJobs returns only due pending jobs, oldest run_at first, up to the limit, and marks them running/claimed", async () => {

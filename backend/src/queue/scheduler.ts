@@ -85,3 +85,287 @@ export async function enqueueDueClassifyJobs(db: Db): Promise<void> {
   `;
   await Promise.all(rows.map((row) => enqueueClassifyJob(db, String(row.id))));
 }
+
+/**
+ * Atomically create immediate attempts and their delivery jobs for newly
+ * classified action emails owned by active quiet-mode channel users. The
+ * attempt's unique index makes concurrent scheduler scans safe.
+ */
+export async function scheduleImmediateDeliveries(
+  db: Db,
+  now: Date,
+): Promise<void> {
+  await db.withTx(async (tx) => {
+    await tx`
+      WITH inserted_attempts AS (
+        INSERT INTO delivery_attempts(
+          user_id, channel_id, kind, email_id, status
+        )
+        SELECT
+          m.user_id,
+          c.id,
+          'immediate',
+          e.id,
+          'pending'
+        FROM emails e
+        JOIN mailboxes m ON m.id = e.mailbox_id
+        JOIN delivery_settings ds ON ds.user_id = m.user_id
+        JOIN channels c ON c.user_id = m.user_id
+        WHERE ds.mode = 'quiet'
+          AND c.status = 'active'
+          AND e.category = 'requires_action'
+          AND e.classified_at > ds.delivery_baseline_at
+          AND e.classified_at <= ${now}
+        ORDER BY c.id, e.id
+        ON CONFLICT DO NOTHING
+        RETURNING id
+      )
+      INSERT INTO jobs(type, payload, status)
+      SELECT
+        'deliver_channel',
+        jsonb_build_object('deliveryAttemptId', id::text),
+        'pending'
+      FROM inserted_attempts
+      ON CONFLICT DO NOTHING
+    `;
+  });
+}
+
+/**
+ * Queue the latest due heartbeat for active quiet-mode channels when no
+ * successful immediate delivery occurred in its preceding configured window.
+ */
+export async function scheduleQuietHeartbeats(
+  db: Db,
+  now: Date,
+): Promise<void> {
+  await db.withTx(async (tx) => {
+    await tx`
+      WITH candidates AS (
+        SELECT
+          ds.user_id,
+          c.id AS channel_id,
+          due.scheduled_for,
+          GREATEST(
+            previous_slot.scheduled_for,
+            ds.delivery_baseline_at
+          ) AS window_start
+        FROM delivery_settings ds
+        JOIN channels c
+          ON c.user_id = ds.user_id
+         AND c.status = 'active'
+        CROSS JOIN LATERAL (
+          SELECT
+            (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
+              AS scheduled_for
+          FROM generate_series(
+            date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC')
+              - INTERVAL '7 days',
+            date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC'),
+            INTERVAL '1 day'
+          ) AS days(utc_day)
+          WHERE EXTRACT(ISODOW FROM days.utc_day)::smallint
+                  = ANY(ds.digest_days)
+            AND (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
+                  <= ${now}
+          ORDER BY scheduled_for DESC
+          LIMIT 1
+        ) due
+        CROSS JOIN LATERAL (
+          SELECT
+            (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
+              AS scheduled_for
+          FROM generate_series(
+            (due.scheduled_for AT TIME ZONE 'UTC')::date - INTERVAL '7 days',
+            (due.scheduled_for AT TIME ZONE 'UTC')::date - INTERVAL '1 day',
+            INTERVAL '1 day'
+          ) AS days(utc_day)
+          WHERE EXTRACT(ISODOW FROM days.utc_day)::smallint
+                  = ANY(ds.digest_days)
+          ORDER BY scheduled_for DESC
+          LIMIT 1
+        ) previous_slot
+        WHERE ds.mode = 'quiet'
+          AND due.scheduled_for > ds.delivery_baseline_at
+      ),
+      inserted_attempts AS (
+        INSERT INTO delivery_attempts(
+          user_id,
+          channel_id,
+          kind,
+          scheduled_for,
+          window_start,
+          window_end,
+          status
+        )
+        SELECT
+          candidate.user_id,
+          candidate.channel_id,
+          'heartbeat',
+          candidate.scheduled_for,
+          candidate.window_start,
+          candidate.scheduled_for,
+          'pending'
+        FROM candidates candidate
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM delivery_attempts immediate
+          WHERE immediate.channel_id = candidate.channel_id
+            AND immediate.kind = 'immediate'
+            AND immediate.status = 'sent'
+            AND immediate.sent_at > candidate.window_start
+            AND immediate.sent_at <= ${now}
+        )
+        ON CONFLICT DO NOTHING
+        RETURNING id
+      )
+      INSERT INTO jobs(type, payload, status)
+      SELECT
+        'deliver_channel',
+        jsonb_build_object('deliveryAttemptId', id::text),
+        'pending'
+      FROM inserted_attempts
+      ON CONFLICT DO NOTHING
+    `;
+  });
+}
+
+/**
+ * Close the latest due UTC digest window into an immutable attempt snapshot.
+ * The attempt's unique index elects one concurrent scheduler; only that winner
+ * writes items and a delivery job. Successful delivery advances the cutoff.
+ */
+export async function scheduleDailyDigests(db: Db, now: Date): Promise<void> {
+  await db.withTx(async (tx) => {
+    await tx`
+      WITH candidates AS (
+        SELECT
+          ds.user_id,
+          c.id AS channel_id,
+          ds.delivery_baseline_at,
+          COALESCE(
+            ds.last_digest_cutoff_at,
+            ds.delivery_baseline_at
+          ) AS window_start,
+          due.scheduled_for
+        FROM delivery_settings ds
+        JOIN channels c
+          ON c.user_id = ds.user_id
+         AND c.status = 'active'
+        CROSS JOIN LATERAL (
+          SELECT
+            (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
+              AS scheduled_for
+          FROM generate_series(
+            date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC')
+              - INTERVAL '7 days',
+            date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC'),
+            INTERVAL '1 day'
+          ) AS days(utc_day)
+          WHERE EXTRACT(ISODOW FROM days.utc_day)::smallint
+                  = ANY(ds.digest_days)
+            AND (days.utc_day::date + ds.digest_time) AT TIME ZONE 'UTC'
+                  <= ${now}
+          ORDER BY scheduled_for DESC
+          LIMIT 1
+        ) due
+        WHERE ds.mode = 'daily'
+          AND due.scheduled_for > COALESCE(
+            ds.last_digest_cutoff_at,
+            ds.delivery_baseline_at
+          )
+      ),
+      ranked AS (
+        SELECT
+          c.channel_id,
+          c.scheduled_for,
+          e.id AS email_id,
+          e.category,
+          e.summary,
+          row_number() OVER (
+            PARTITION BY c.channel_id, c.scheduled_for
+            ORDER BY
+              CASE e.category
+                WHEN 'requires_action' THEN 1
+                WHEN 'important' THEN 2
+                WHEN 'noise' THEN 3
+              END,
+              e.received_at DESC,
+              e.classified_at DESC,
+              e.id DESC
+          ) AS position,
+          count(*) OVER (
+            PARTITION BY c.channel_id, c.scheduled_for
+          ) AS total_count
+        FROM candidates c
+        JOIN mailboxes m ON m.user_id = c.user_id
+        JOIN emails e ON e.mailbox_id = m.id
+        WHERE e.summary IS NOT NULL
+          AND e.category IS NOT NULL
+          AND e.classified_at > c.window_start
+          AND e.classified_at <= c.scheduled_for
+          AND e.received_at >= c.delivery_baseline_at
+      ),
+      inserted_attempts AS (
+        INSERT INTO delivery_attempts(
+          user_id,
+          channel_id,
+          kind,
+          scheduled_for,
+          window_start,
+          window_end,
+          status,
+          omitted_count
+        )
+        SELECT
+          c.user_id,
+          c.channel_id,
+          'digest',
+          c.scheduled_for,
+          c.window_start,
+          c.scheduled_for,
+          'pending',
+          GREATEST(
+            COALESCE((
+              SELECT max(r.total_count)
+              FROM ranked r
+              WHERE r.channel_id = c.channel_id
+                AND r.scheduled_for = c.scheduled_for
+            ), 0) - 25,
+            0
+          )::integer
+        FROM candidates c
+        ON CONFLICT DO NOTHING
+        RETURNING id, channel_id, scheduled_for
+      ),
+      inserted_items AS (
+        INSERT INTO digest_items(
+          delivery_attempt_id,
+          email_id,
+          position,
+          category,
+          summary
+        )
+        SELECT
+          ia.id,
+          r.email_id,
+          r.position::smallint,
+          r.category,
+          r.summary
+        FROM inserted_attempts ia
+        JOIN ranked r
+          ON r.channel_id = ia.channel_id
+         AND r.scheduled_for = ia.scheduled_for
+        WHERE r.position <= 25
+        RETURNING delivery_attempt_id
+      )
+      INSERT INTO jobs(type, payload, status)
+      SELECT
+        'deliver_channel',
+        jsonb_build_object('deliveryAttemptId', ia.id::text),
+        'pending'
+      FROM inserted_attempts ia
+      ON CONFLICT DO NOTHING
+    `;
+  });
+}

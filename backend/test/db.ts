@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import EmbeddedPg from "embedded-postgres";
 import { createDb } from "../src/db/index";
 import type { Db } from "../src/db/index";
@@ -28,6 +29,11 @@ export type TestDb = {
   close: () => Promise<void>;
 };
 
+const REMOVE_RETRY_DELAYS_MS = [
+  250, 500, 1000, 2000, 5000, 10000, 10000,
+] as const;
+const RETRYABLE_REMOVE_ERROR_CODES = new Set(["EBUSY", "ENOTEMPTY", "EPERM"]);
+
 /** Reserve an ephemeral free TCP port by briefly listening on port 0. */
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -38,6 +44,44 @@ function getFreePort(): Promise<number> {
       srv.close(() => resolve(port));
     });
   });
+}
+
+function isRetryableRemoveError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+
+  return (
+    typeof error.code === "string" &&
+    RETRYABLE_REMOVE_ERROR_CODES.has(error.code)
+  );
+}
+
+async function removeDataDirWithRetry(dataDir: string): Promise<void> {
+  for (
+    let attempt = 0;
+    attempt <= REMOVE_RETRY_DELAYS_MS.length;
+    attempt += 1
+  ) {
+    try {
+      await rm(dataDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!isRetryableRemoveError(error)) {
+        throw error;
+      }
+
+      const delayMs = REMOVE_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) {
+        console.warn(
+          `Leaving test Postgres data directory for OS cleanup after repeated remove failures: ${dataDir}`,
+        );
+        return;
+      }
+
+      await sleep(delayMs);
+    }
+  }
 }
 
 /**
@@ -67,7 +111,7 @@ export async function withTestDb(): Promise<TestDb> {
   const close = async (): Promise<void> => {
     await db.close();
     await pg.stop();
-    await rm(dataDir, { recursive: true, force: true });
+    await removeDataDirWithRetry(dataDir);
   };
 
   return { db, connectionString, close };

@@ -62,7 +62,8 @@ on `postgres://pigeon:pigeon@localhost:5432/pigeon` — the exact default
 `DATABASE_URL` falls back to, so nothing else needs configuring. Data lives
 in `.pgdata/` at the repo root (git-ignored); Ctrl+C stops the cluster and
 leaves the data in place for next time. Run this in its own terminal,
-alongside `pnpm dev` and `pnpm dev:worker` below.
+alongside `pnpm migrate`, `pnpm dev`, and `pnpm dev:worker` below. When using
+`pnpm dev:all`, startup and migration ordering is handled automatically.
 
 Prefer Docker instead? `docker compose up -d db` brings up just the Postgres
 container from `docker-compose.yml` (no need to build the app images for
@@ -70,14 +71,25 @@ local dev) — see `DEPLOY_TO_HETZNER.md` for the full containerized stack.
 
 ## Running the app
 
+On Windows, the all-in-one command starts Postgres, waits for it, applies any
+pending migrations, and then launches the database, app, and worker as three
+tabs in one Windows Terminal window:
+
+```sh
+pnpm dev:all
+```
+
+For manual startup (or on other platforms), preserve the same ordering:
+
 ```sh
 pnpm dev:db       # local Postgres (separate terminal, see above)
+pnpm migrate      # after Postgres is ready; rerun after pulling new migrations
 pnpm dev          # frontend (Astro, :4321) + backend API (Hono, :8788) together
 pnpm dev:worker   # background worker (separate terminal)
 ```
 
-`pnpm migrate` needs to be run once against a fresh database (see
-Migrations, below) before `pnpm dev`/`dev:worker` will work end-to-end.
+Migrations are idempotent and must be applied to both fresh databases and
+existing databases whenever new migration files are introduced.
 
 The worker runs three independent loops: a liveness heartbeat, a scheduler
 tick that enqueues due mailboxes for sync, and a poll loop that claims and

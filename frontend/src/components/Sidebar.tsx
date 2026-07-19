@@ -10,7 +10,6 @@ import { formatTime } from "../lib/format";
 import {
   ArrowUpRightIcon,
   CalendarIcon,
-  channelVisual,
   MoonIcon,
   PlusIcon,
   providerVisual,
@@ -23,36 +22,44 @@ import EditScheduleDialog from "./EditScheduleDialog";
 
 export default function Sidebar(props: {
   accounts: EmailAccount[];
-  channels: Channel[];
+  channel: Channel | null;
   digest: Digest;
   lastSync: string;
   /** Called after any successful mutation so the dashboard refetches. */
   onChanged: () => void;
 }): JSX.Element {
-  const [addOpen, setAddOpen] = createSignal(false);
-  const [addPreset, setAddPreset] = createSignal<AddInboxPreset | null>(null);
-  const [scheduleOpen, setScheduleOpen] = createSignal(false);
-  const [channelOpen, setChannelOpen] = createSignal(false);
-  const [busyId, setBusyId] = createSignal<string | null>(null);
+  const [isInboxDialogOpen, setIsInboxDialogOpen] = createSignal(false);
+  const [inboxPreset, setInboxPreset] = createSignal<AddInboxPreset | null>(
+    null,
+  );
+  const [isScheduleDialogOpen, setIsScheduleDialogOpen] = createSignal(false);
+  const [isChannelDialogOpen, setIsChannelDialogOpen] = createSignal(false);
+  const [syncingInboxId, setSyncingInboxId] = createSignal<string | null>(null);
+  const [channelAction, setChannelAction] = createSignal<
+    "test" | "remove" | null
+  >(null);
+  const [channelErrorMessage, setChannelErrorMessage] = createSignal<
+    string | null
+  >(null);
 
   function openAdd() {
-    setAddPreset(null);
-    setAddOpen(true);
+    setInboxPreset(null);
+    setIsInboxDialogOpen(true);
   }
 
   function openReconnect(acc: EmailAccount) {
-    setAddPreset({
+    setInboxPreset({
       provider: acc.provider,
       address: acc.address,
       label: acc.label,
       protocol: acc.protocol === "pop3" ? "pop3" : "imap",
     });
-    setAddOpen(true);
+    setIsInboxDialogOpen(true);
   }
 
   async function syncInbox(acc: EmailAccount) {
-    if (busyId() === acc.id) return;
-    setBusyId(acc.id);
+    if (syncingInboxId() === acc.id) return;
+    setSyncingInboxId(acc.id);
     try {
       await mailboxes.syncNow(acc.id);
       props.onChanged();
@@ -61,29 +68,56 @@ export default function Sidebar(props: {
       // endpoint not being live yet) must not become an unhandled rejection.
       // The next dashboard poll reflects the real mailbox state regardless.
     } finally {
-      setBusyId(null);
+      setSyncingInboxId(null);
     }
   }
 
-  async function toggleChannel(ch: Channel) {
-    setBusyId(ch.id);
+  function channelStatusLabel(channel: Channel): string {
+    return channel.status === "active"
+      ? "Active"
+      : "Error: Discord connection failed.";
+  }
+
+  async function testChannel(ch: Channel): Promise<void> {
+    if (channelAction() !== null) return;
+    setChannelAction("test");
+    setChannelErrorMessage(null);
     try {
-      await channelsApi.update(ch.id, { enabled: !ch.enabled });
+      await channelsApi.test(ch.id);
       props.onChanged();
     } catch {
-      // leave state as-is; next refetch shows the truth
+      setChannelErrorMessage(
+        "Could not send a Discord test. Please try again.",
+      );
     } finally {
-      setBusyId(null);
+      setChannelAction(null);
     }
   }
 
-  async function saveSchedule(time: string, days: Digest["days"]) {
+  async function disconnectChannel(ch: Channel): Promise<void> {
+    if (channelAction() !== null) return;
+    setChannelAction("remove");
+    setChannelErrorMessage(null);
+    try {
+      await channelsApi.remove(ch.id);
+      props.onChanged();
+    } catch {
+      setChannelErrorMessage("Could not disconnect Discord. Please try again.");
+    } finally {
+      setChannelAction(null);
+    }
+  }
+
+  async function saveSchedule(
+    time: string,
+    days: Digest["digestDays"],
+  ): Promise<void> {
     await deliverySettings.update({ digestTime: time, digestDays: days });
     props.onChanged();
   }
 
-  async function setDigestMode(enabled: boolean) {
-    await deliverySettings.update({ digestEnabled: enabled });
+  async function setDigestMode(mode: Digest["mode"]): Promise<void> {
+    await deliverySettings.update({ mode });
     props.onChanged();
   }
 
@@ -105,7 +139,7 @@ export default function Sidebar(props: {
               <button
                 type="button"
                 class="inbox"
-                disabled={busyId() === acc.id}
+                disabled={syncingInboxId() === acc.id}
                 title={connected() ? "Sync now" : "Reconnect"}
                 onClick={() => {
                   if (connected()) {
@@ -156,46 +190,74 @@ export default function Sidebar(props: {
           <span class="card-title">Notify me on</span>
         </div>
 
-        <For each={props.channels}>
+        <For each={props.channel ? [props.channel] : []}>
           {(ch) => {
-            const v = channelVisual(ch.kind);
+            const isActive = () => ch.status === "active";
             return (
-              <button
-                type="button"
-                class="inbox"
-                disabled={busyId() === ch.id}
-                title={ch.enabled ? "Click to pause" : "Click to enable"}
-                onClick={() => void toggleChannel(ch)}
-              >
-                <div class="inbox-avatar" style={{ background: v.color }}>
-                  {v.glyph}
+              <div class="channel">
+                <div class="inbox channel-summary">
+                  <div
+                    class="inbox-avatar"
+                    style={{ background: "var(--discord)" }}
+                  >
+                    ◎
+                  </div>
+                  <div class="inbox-meta">
+                    <div class="inbox-label">Discord</div>
+                    <div class="inbox-addr">{channelStatusLabel(ch)}</div>
+                  </div>
+                  <span
+                    class={`inbox-state ${isActive() ? "connected" : "disconnected"}`}
+                  >
+                    {isActive() ? "Active" : "Reconnect needed"}
+                  </span>
                 </div>
-                <div class="inbox-meta">
-                  <div class="inbox-label">{ch.label}</div>
-                  <div class="inbox-addr">{ch.webhookUrl}</div>
+                <div class="channel-actions">
+                  <button
+                    type="button"
+                    class="channel-action"
+                    disabled={channelAction() !== null}
+                    onClick={() => void testChannel(ch)}
+                  >
+                    {channelAction() === "test" ? "Testing…" : "Test again"}
+                  </button>
+                  <button
+                    type="button"
+                    class="channel-action channel-disconnect"
+                    disabled={channelAction() !== null}
+                    onClick={() => void disconnectChannel(ch)}
+                  >
+                    {channelAction() === "remove"
+                      ? "Disconnecting…"
+                      : "Disconnect"}
+                  </button>
                 </div>
-                <span
-                  class={`inbox-state ${ch.enabled ? "connected" : "disconnected"}`}
-                >
-                  {ch.enabled ? "On" : "Paused"}
-                </span>
-              </button>
+                <Show when={channelErrorMessage()}>
+                  {(message) => (
+                    <p class="channel-error" role="alert">
+                      {message()}
+                    </p>
+                  )}
+                </Show>
+              </div>
             );
           }}
         </For>
 
-        <button
-          type="button"
-          class="inbox inbox-add"
-          onClick={() => setChannelOpen(true)}
-        >
-          <div class="inbox-avatar inbox-add-avatar">
-            <PlusIcon />
-          </div>
-          <div class="inbox-meta">
-            <div class="inbox-label">Add new channel</div>
-          </div>
-        </button>
+        <Show when={!props.channel}>
+          <button
+            type="button"
+            class="inbox inbox-add"
+            onClick={() => setIsChannelDialogOpen(true)}
+          >
+            <div class="inbox-avatar inbox-add-avatar">
+              <PlusIcon />
+            </div>
+            <div class="inbox-meta">
+              <div class="inbox-label">Add new channel</div>
+            </div>
+          </button>
+        </Show>
       </section>
 
       {/* ---- Smart digest card ------------------------------------- */}
@@ -204,16 +266,16 @@ export default function Sidebar(props: {
           <button
             type="button"
             class="digest-mode"
-            classList={{ active: props.digest.enabled }}
-            onClick={() => void setDigestMode(true)}
+            classList={{ active: props.digest.mode === "daily" }}
+            onClick={() => void setDigestMode("daily")}
           >
             <CalendarIcon /> Daily digest
           </button>
           <button
             type="button"
             class="digest-mode"
-            classList={{ active: !props.digest.enabled }}
-            onClick={() => void setDigestMode(false)}
+            classList={{ active: props.digest.mode === "quiet" }}
+            onClick={() => void setDigestMode("quiet")}
           >
             <MoonIcon /> Quiet mode
           </button>
@@ -221,7 +283,7 @@ export default function Sidebar(props: {
 
         <div class="digest-panel">
           <Show
-            when={props.digest.enabled}
+            when={props.digest.mode === "daily"}
             fallback={
               <>
                 <h3 class="digest-headline">
@@ -231,8 +293,17 @@ export default function Sidebar(props: {
                   Quiet mode
                 </h3>
                 <p class="digest-sub">
-                  Only urgent emails reach your channels. No daily digest.
+                  New requires-action emails are sent immediately. During quiet
+                  stretches, Pigeon sends reassurance at{" "}
+                  {formatTime(props.digest.digestTime)} UTC on your selected
+                  days.
                 </p>
+                <button
+                  class="digest-edit"
+                  onClick={() => setIsScheduleDialogOpen(true)}
+                >
+                  Edit reassurance schedule <ArrowUpRightIcon />
+                </button>
               </>
             }
           >
@@ -240,13 +311,16 @@ export default function Sidebar(props: {
               <span class="digest-icon">
                 <SendIcon />
               </span>
-              Daily digest at {formatTime(props.digest.time)}
+              Daily digest at {formatTime(props.digest.digestTime)} UTC
             </h3>
             <p class="digest-sub">
-              Last sent {props.digest.lastSent}. Urgent mail still reaches you
-              instantly.
+              Only scheduled digests are sent. Last sent{" "}
+              {props.digest.lastSuccessfulDigestAt ?? "Never"}.
             </p>
-            <button class="digest-edit" onClick={() => setScheduleOpen(true)}>
+            <button
+              class="digest-edit"
+              onClick={() => setIsScheduleDialogOpen(true)}
+            >
               Edit schedule <ArrowUpRightIcon />
             </button>
           </Show>
@@ -255,21 +329,21 @@ export default function Sidebar(props: {
 
       {/* ---- Dialogs ----------------------------------------------- */}
       <AddInboxDialog
-        open={addOpen()}
-        preset={addPreset()}
-        onClose={() => setAddOpen(false)}
+        open={isInboxDialogOpen()}
+        preset={inboxPreset()}
+        onClose={() => setIsInboxDialogOpen(false)}
         onConnected={props.onChanged}
       />
       <AddChannelDialog
-        open={channelOpen()}
-        onClose={() => setChannelOpen(false)}
+        open={isChannelDialogOpen()}
+        onClose={() => setIsChannelDialogOpen(false)}
         onConnected={props.onChanged}
       />
       <EditScheduleDialog
-        open={scheduleOpen()}
-        time={props.digest.time}
-        days={props.digest.days}
-        onClose={() => setScheduleOpen(false)}
+        open={isScheduleDialogOpen()}
+        time={props.digest.digestTime}
+        days={props.digest.digestDays}
+        onClose={() => setIsScheduleDialogOpen(false)}
         onSave={(time, days) => void saveSchedule(time, days)}
       />
     </aside>

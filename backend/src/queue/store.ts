@@ -92,6 +92,24 @@ export async function enqueueClassifyJob(
 }
 
 /**
+ * Enqueue the single in-flight `deliver_channel` job for a delivery attempt.
+ * Repeated and concurrent calls are no-ops while it is pending or running.
+ */
+export async function enqueueDeliveryJob(
+  db: Db,
+  deliveryAttemptId: string,
+): Promise<void> {
+  await db.query`
+    INSERT INTO jobs (type, payload)
+    VALUES (
+      'deliver_channel',
+      jsonb_build_object('deliveryAttemptId', ${deliveryAttemptId}::text)
+    )
+    ON CONFLICT DO NOTHING
+  `;
+}
+
+/**
  * Claim up to `limit` jobs (FR-3, FR-9): fresh `pending` work that's due, and
  * abandoned `running` work past the visibility timeout, in one atomic
  * statement so two concurrent callers never claim the same row

@@ -27,6 +27,8 @@ import { emailsRoutes } from "./emails/routes";
 import { oauthRoutes } from "./oauth/routes";
 import { createMailSender } from "./mail/index";
 import { createVault } from "./vault/index";
+import { channelRoutes } from "./channels/routes";
+import { createChannelRegistry } from "./channels/registry";
 import { loadDotEnv } from "./env";
 import type { Db } from "./db/index";
 import type { MailSender } from "./mail/index";
@@ -41,7 +43,14 @@ import type { Vault } from "./vault/index";
  * - Every other route is delegated to the feature routers: `authRoutes`,
  *   `mailboxesRoutes`, `dashboardRoutes`, and `oauthRoutes`.
  */
-export function createApp(db: Db, mail: MailSender, vault: Vault): Hono {
+export function createApp(
+  db: Db,
+  mail: MailSender,
+  vault: Vault,
+  channelRegistry: ReturnType<
+    typeof createChannelRegistry
+  > = createChannelRegistry({ fetch }),
+): Hono {
   const app = new Hono();
 
   /** Liveness: the process is up. */
@@ -65,6 +74,7 @@ export function createApp(db: Db, mail: MailSender, vault: Vault): Hono {
   app.route("/", dashboardRoutes(db));
   app.route("/", emailsRoutes(db));
   app.route("/", oauthRoutes(db));
+  app.route("/", channelRoutes(db, channelRegistry, vault));
 
   return app;
 }

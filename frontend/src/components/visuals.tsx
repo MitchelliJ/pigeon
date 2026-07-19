@@ -269,10 +269,6 @@ export function channelVisual(kind: ChannelKind): {
   glyph: string;
 } {
   switch (kind) {
-    case "whatsapp":
-      return { color: "var(--whatsapp)", glyph: "✆" };
-    case "signal":
-      return { color: "var(--signal)", glyph: "✦" };
     case "discord":
       return { color: "var(--discord)", glyph: "◎" };
   }

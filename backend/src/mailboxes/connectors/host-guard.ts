@@ -17,6 +17,7 @@
 
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
 
 /** Thrown by `assertHostAllowed` when a host resolves to a non-public address. */
 export class BlockedHostError extends Error {
@@ -156,7 +157,7 @@ export async function assertHostAllowed(host: string): Promise<void> {
     return;
   }
 
-  let results: Awaited<ReturnType<typeof lookup>>;
+  let results: LookupAddress[];
   try {
     results = await lookup(host, { all: true });
   } catch {

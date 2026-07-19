@@ -1,0 +1,152 @@
+# Relevant Files
+
+- `db/migrations/0009_discord_delivery.sql` - Adds channels, delivery settings, delivery attempts, digest snapshots, and `deliver_channel` jobs.
+- `backend/test/discord-delivery-schema.test.ts` - Integration tests for migration defaults, constraints, uniqueness, and cascades.
+- `shared/src/index.ts` - Updates shared channel, delivery mode, digest/settings, and dashboard contracts.
+- `backend/src/channels/types.ts` - Provider-neutral connector, message, result, settings, and DTO types.
+- `backend/src/channels/renderer.ts` - Centralized basic Discord/delivery message copy and formatting.
+- `backend/src/channels/discord.ts` - Discord webhook adapter using `fetch`.
+- `backend/src/channels/registry.ts` - Registers installed channel connectors, initially Discord only.
+- `backend/src/channels/store.ts` - SQL persistence for channels, settings, attempts, and digest snapshots.
+- `backend/src/channels/service.ts` - Business logic for connect/test/disconnect/settings and scheduling helpers.
+- `backend/src/channels/routes.ts` - Authenticated channel and delivery-settings API routes.
+- `backend/src/channels/test/*.test.ts` - Unit/integration tests for renderer, Discord adapter, service, and routes.
+- `backend/src/server.ts` - Mounts channel routes and injects registry/vault dependencies.
+- `backend/src/mailboxes/dashboard.ts` - Returns real channel and delivery settings in dashboard data.
+- `backend/src/mailboxes/test/dashboard.test.ts` - Dashboard coverage for redacted channel/settings data.
+- `backend/src/queue/types.ts` - Adds `deliver_channel` job type.
+- `backend/src/queue/store.ts` - Adds enqueue helper for delivery jobs.
+- `backend/src/queue/scheduler.ts` - Adds quiet immediate discovery and daily digest scheduling ticks.
+- `backend/src/queue/worker-loop.ts` - Dispatches `deliver_channel` jobs.
+- `backend/src/queue/handlers/deliver-channel.ts` - Sends delivery attempts through the configured connector.
+- `backend/src/queue/test/*.test.ts` - Queue/scheduler/worker tests for delivery jobs and idempotency.
+- `backend/src/worker.ts` - Runs delivery scheduler ticks on the existing cadence.
+- `frontend/src/lib/api.ts` - Updates client calls/types for one channel and delivery settings.
+- `frontend/src/components/AddChannelDialog.tsx` - Discord-only connect flow with no threshold.
+- `frontend/src/components/Sidebar.tsx` - One-channel UI, disconnect/test actions, status, corrected mode copy.
+- `frontend/src/components/EditScheduleDialog.tsx` - UTC schedule display and default daily behavior.
+- `frontend/src/styles/global.css` - Any UI state styling for channel error/status changes.
+- `.env.example` - Only if needed for optional Discord adapter tuning; no webhook secret belongs here.
+
+# Tasks
+
+- [x] 1.0 Add delivery schema and shared contracts
+  - [x] 1.1 RED: Write failing schema tests for `0009_discord_delivery.sql`: singleton channel per user, encrypted config column exists, settings defaults to daily 08:00 UTC all days, valid/invalid digest days, attempt shape constraints, immediate/digest uniqueness, digest item position constraints, cascades, and `deliver_channel` allowed in jobs.
+  - [x] 1.2 CONFIRM RED: Run `pnpm vitest backend/test/discord-delivery-schema.test.ts` with bash — verify failure before migration exists.
+  - [x] 1.3 GREEN: Create `db/migrations/0009_discord_delivery.sql` with channels, delivery settings, delivery attempts, digest items, indexes, constraints, and widened `jobs_type_check`.
+  - [x] 1.4 CONFIRM GREEN: Run `pnpm vitest backend/test/discord-delivery-schema.test.ts` with bash — verify tests pass.
+  - [x] 1.5 RED: Write failing type/build tests or type usages that require the new shared one-channel contracts: `Channel` without webhook/minCategory/enabled/label, `DeliveryMode`, UTC delivery settings, and `DashboardData.channel`.
+  - [x] 1.6 CONFIRM RED: Run `pnpm --filter @pigeon/shared typecheck` with bash — verify expected type failures.
+  - [x] 1.7 GREEN: Update `shared/src/index.ts` to the new channel/settings/dashboard contract.
+  - [x] 1.8 CONFIRM GREEN: Run `pnpm --filter @pigeon/shared typecheck` with bash — verify pass.
+  - [x] 1.9 REFACTOR: Clean schema/types naming and comments without behavior changes; CONFIRM GREEN by rerunning the commands from 1.4 and 1.8.
+  - [x] 1.10 CHECK PHASE: Run `pnpm check` with bash; note frontend/backend compile failures expected only if caused by contract consumers not yet migrated.
+
+- [x] 2.0 Build provider-neutral channel connector and Discord adapter
+  - [x] 2.1 RED: Write failing tests for `backend/src/channels/renderer.ts`: basic test copy, immediate heading, digest heading, empty digest copy, overflow notice, and stable category labels are centralized.
+  - [x] 2.2 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/renderer.test.ts` with bash — verify failure.
+  - [x] 2.3 GREEN: Implement `types.ts` and `renderer.ts` with provider-neutral `DeliveryMessage`, `SendResult`, connector types, and the approved basic copy.
+  - [x] 2.4 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/renderer.test.ts` with bash — verify pass.
+  - [x] 2.5 RED: Write failing Discord adapter tests for URL allowlist/path validation, userinfo/fragments/ports/redirect rejection, success with `wait=true`, retryable network/429/5xx, permanent 401/403/404, sanitized errors, payload truncation/limits, and no secret in thrown/result messages.
+  - [x] 2.6 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/discord.test.ts` with bash — verify failure.
+  - [x] 2.7 GREEN: Implement `discord.ts` with direct `fetch`, strict URL validation, payload rendering, retry classification, and safe truncation.
+  - [x] 2.8 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/discord.test.ts` with bash — verify pass.
+  - [x] 2.9 RED: Write failing registry tests proving only Discord is registered and connectors are resolved by kind without leaking Discord details.
+  - [x] 2.10 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/registry.test.ts` with bash — verify failure.
+  - [x] 2.11 GREEN: Implement `registry.ts`.
+  - [x] 2.12 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/registry.test.ts` with bash — verify pass.
+  - [x] 2.13 REFACTOR: Simplify adapter internals without changing public behavior; CONFIRM GREEN by rerunning all `backend/src/channels/test/*` tests.
+  - [x] 2.14 CHECK PHASE: Run `pnpm check` with bash.
+
+- [x] 3.0 Implement channel/settings persistence and service logic
+  - [x] 3.1 RED: Write failing store/service tests for default settings creation, connect test-before-save, failed test no-save, vault sealing/opening, singleton enforcement, no plaintext returned, disconnect baseline reset, test-again success clearing error, ownership isolation, and invalid config mapping.
+  - [x] 3.2 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/store.test.ts backend/src/channels/test/service.test.ts` with bash — verify failure.
+  - [x] 3.3 GREEN: Implement `store.ts` and `service.ts` for channels/settings lifecycle using the existing vault.
+  - [x] 3.4 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/store.test.ts backend/src/channels/test/service.test.ts` with bash — verify pass.
+  - [x] 3.5 RED: Write failing settings tests for mode validation, time/day validation, mode-change baseline reset, schedule-only edit not resetting baseline, pending old-mode attempts cancellation/ignore semantics, and UTC response field.
+  - [x] 3.6 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/settings.test.ts` with bash — verify failure.
+  - [x] 3.7 GREEN: Implement delivery-settings service methods.
+  - [x] 3.8 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/settings.test.ts` with bash — verify pass.
+  - [x] 3.9 REFACTOR: Consolidate SQL helpers and sanitized error mapping; CONFIRM GREEN by rerunning all channels service/store tests.
+  - [x] 3.10 CHECK PHASE: Run `pnpm check` with bash.
+
+- [x] 4.0 Expose authenticated channel and delivery-settings APIs
+  - [x] 4.1 RED: Write failing route tests for `GET /api/channels`, `POST /api/channels`, `POST /api/channels/:id/test`, `DELETE /api/channels/:id`, `GET /api/settings/delivery`, and `PATCH /api/settings/delivery`, covering auth, CSRF on mutations, body limits/validation, 409 channel_exists, no webhook in responses, ownership, and structured error codes.
+  - [x] 4.2 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/routes.test.ts backend/test/app-routes.test.ts` with bash — verify failure.
+  - [x] 4.3 GREEN: Implement `routes.ts` and mount it from `backend/src/server.ts` with injected registry/vault dependencies.
+  - [x] 4.4 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/routes.test.ts backend/test/app-routes.test.ts` with bash — verify pass.
+  - [x] 4.5 RED: Write failing dashboard tests proving `GET /api/dashboard` returns real redacted `channel`, real delivery settings/defaults, and last digest state scoped to the authenticated user.
+  - [x] 4.6 CONFIRM RED: Run `pnpm vitest backend/src/mailboxes/test/dashboard.test.ts` with bash — verify failure.
+  - [x] 4.7 GREEN: Update `backend/src/mailboxes/dashboard.ts` to load channel/settings data.
+  - [x] 4.8 CONFIRM GREEN: Run `pnpm vitest backend/src/mailboxes/test/dashboard.test.ts` with bash — verify pass.
+  - [x] 4.9 REFACTOR: Keep route handlers thin and move business rules into services; CONFIRM GREEN by rerunning route/dashboard tests.
+  - [x] 4.10 CHECK PHASE: Run `pnpm check` with bash.
+
+- [x] 5.0 Add delivery job queueing, scheduler discovery, and worker handler
+  - [x] 5.1 RED: Write failing queue store tests for `enqueueDeliveryJob` uniqueness by `deliveryAttemptId` and compatibility with existing claim/complete/fail flow.
+  - [x] 5.2 CONFIRM RED: Run `pnpm vitest backend/src/queue/test/store.test.ts` with bash — verify failure.
+  - [x] 5.3 GREEN: Add `deliver_channel` to queue types and enqueue helper in `backend/src/queue/store.ts`.
+  - [x] 5.4 CONFIRM GREEN: Run `pnpm vitest backend/src/queue/test/store.test.ts` with bash — verify pass.
+  - [x] 5.5 RED: Write failing scheduler tests for quiet-mode immediate discovery: only active quiet channels, only post-baseline classified `requires_action`, no daily-mode sends, no important/noise sends, idempotent repeated/concurrent ticks, and no cross-user leakage.
+  - [x] 5.6 CONFIRM RED: Run `pnpm vitest backend/src/queue/test/scheduler.test.ts` with bash — verify failure.
+  - [x] 5.7 GREEN: Implement immediate delivery discovery and attempt+job insertion transactionally.
+  - [x] 5.8 CONFIRM GREEN: Run `pnpm vitest backend/src/queue/test/scheduler.test.ts` with bash — verify pass.
+  - [x] 5.9 RED: Write failing scheduler tests for daily digest: UTC due calculation, weekday filtering, latest-due catch-up only, window start/end, category/newest ranking, 25 cap, omitted count, empty digest attempt, no active channel no-op, and no cutoff advancement before send.
+  - [x] 5.10 CONFIRM RED: Run `pnpm vitest backend/src/queue/test/digest-scheduler.test.ts` with bash — verify failure.
+  - [x] 5.11 GREEN: Implement digest scheduling and `digest_items` snapshots.
+  - [x] 5.12 CONFIRM GREEN: Run `pnpm vitest backend/src/queue/test/digest-scheduler.test.ts` with bash — verify pass.
+  - [x] 5.13 RED: Write failing worker handler tests for already-sent no-op, success marking sent and advancing digest cutoff, retryable connector failure using queue retry path, permanent invalid webhook disabling channel, permanent payload failure not looping, digest retry using same snapshot, and immediate success.
+  - [x] 5.14 CONFIRM RED: Run `pnpm vitest backend/src/queue/test/deliver-channel.test.ts backend/src/queue/test/worker-loop.test.ts` with bash — verify failure.
+  - [x] 5.15 GREEN: Implement `handlers/deliver-channel.ts`, wire `worker-loop.ts`, and call delivery scheduler ticks from `worker.ts`.
+  - [x] 5.16 CONFIRM GREEN: Run `pnpm vitest backend/src/queue/test/deliver-channel.test.ts backend/src/queue/test/worker-loop.test.ts backend/src/queue/test/scheduler.test.ts backend/src/queue/test/digest-scheduler.test.ts` with bash — verify pass.
+  - [x] 5.17 REFACTOR: Remove duplication between immediate/digest attempt loading and ensure sanitized logging/errors; CONFIRM GREEN by rerunning all queue tests.
+  - [x] 5.18 CHECK PHASE: Run `pnpm check` with bash.
+
+- [x] 6.0 Update frontend API client and one-channel UI
+  - [x] 6.1 RED: Write failing frontend type/build check for updated `frontend/src/lib/api.ts` against shared one-channel contracts and removed `minCategory`, webhook display, and multi-channel CRUD assumptions.
+  - [x] 6.2 CONFIRM RED: Run `pnpm --filter @pigeon/frontend typecheck` with bash — verify failure.
+  - [x] 6.3 GREEN: Update `frontend/src/lib/api.ts` for `GET /api/channels`, create/test/delete, and delivery settings get/patch.
+  - [x] 6.4 CONFIRM GREEN: Run `pnpm --filter @pigeon/frontend typecheck` with bash — verify pass or only component errors expected for not-yet-updated consumers.
+  - [x] 6.5 RED: Write failing component/build checks for `AddChannelDialog.tsx`: Discord-only, no Signal/WhatsApp tiles, no threshold, connect button waits for test+save, and errors render safely.
+  - [x] 6.6 CONFIRM RED: Run `pnpm --filter @pigeon/frontend typecheck` with bash — verify failure.
+  - [x] 6.7 GREEN: Update `AddChannelDialog.tsx`.
+  - [x] 6.8 CONFIRM GREEN: Run `pnpm --filter @pigeon/frontend typecheck` with bash — verify pass or only remaining Sidebar errors.
+  - [x] 6.9 RED: Write failing component/build checks for `Sidebar.tsx` and `EditScheduleDialog.tsx`: one configured channel, hide add while present, disconnect/test actions, active/error status, no webhook value, corrected daily/quiet copy, UTC schedule label, all-days default behavior.
+  - [x] 6.10 CONFIRM RED: Run `pnpm --filter @pigeon/frontend typecheck` with bash — verify failure.
+  - [x] 6.11 GREEN: Update Sidebar, schedule dialog, and CSS.
+  - [x] 6.12 CONFIRM GREEN: Run `pnpm --filter @pigeon/frontend typecheck` and `pnpm --filter @pigeon/frontend build` with bash — verify pass.
+  - [x] 6.13 REFACTOR: Clean UI state naming and remove dead multi-channel/threshold code; CONFIRM GREEN by rerunning frontend typecheck/build.
+  - [x] 6.14 CHECK PHASE: Run `pnpm check` with bash.
+
+- [x] 7.0 End-to-end integration and regression coverage
+  - [x] 7.1 RED: Write failing integration test: connect Discord with fake fetch, switch quiet mode, classify a new requires-action email, run scheduler+worker ticks, assert exactly one Discord payload and sent attempt.
+  - [x] 7.2 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/delivery-e2e.test.ts` with bash — test passed immediately; no wiring gap remained.
+  - [x] 7.3 GREEN: Fix wiring gaps until the quiet-mode E2E passes. (No production change required.)
+  - [x] 7.4 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/delivery-e2e.test.ts` with bash — verify pass.
+  - [x] 7.5 RED: Write failing integration test: daily mode with mixed categories sends one ranked capped digest, reports overflow, advances cutoff, and a later digest does not include omitted rows.
+  - [x] 7.6 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/digest-e2e.test.ts` with bash — verify failure.
+  - [x] 7.7 GREEN: Fix wiring gaps until the digest E2E passes.
+  - [x] 7.8 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/digest-e2e.test.ts` with bash — verify pass.
+  - [x] 7.9 RED: Write failing integration test for invalid/deleted webhook: Discord 404 disables channel, surfaces redacted dashboard error, and prevents new scheduling after disable.
+  - [x] 7.10 CONFIRM RED: Run `pnpm vitest backend/src/channels/test/invalid-webhook-e2e.test.ts` with bash — test passed immediately; no propagation gap remained.
+  - [x] 7.11 GREEN: Fix error-state propagation and scheduler active-channel filtering. (No production change required.)
+  - [x] 7.12 CONFIRM GREEN: Run `pnpm vitest backend/src/channels/test/invalid-webhook-e2e.test.ts` with bash — verify pass.
+  - [x] 7.13 REFACTOR: Review cross-module boundaries so connector adapters do not leak into scheduling policy; CONFIRM GREEN by rerunning all Feature 7 tests.
+  - [x] 7.14 CHECK PHASE: Run `pnpm check` with bash.
+
+- [x] 8.0 Documentation and cleanup
+  - [x] 8.1 RED: Check for stale frontend/backend references to removed concepts with bash: `rg "minCategory|webhookUrl|whatsapp|signal|digestEnabled|digestChannelId|quietReassurance|enabled:.*channel|Channel\[\]" frontend backend shared` and record expected remaining false positives only.
+  - [x] 8.2 GREEN: Remove stale references, dead code, and misleading comments/copy.
+  - [x] 8.3 CONFIRM GREEN: Rerun the `rg` command from 8.1 with bash and verify no disallowed references remain in shipped Feature 7 paths.
+  - [x] 8.4 Update `.env.example` only if implementation introduced optional non-secret config; do not add example webhook URLs as secrets. (No new config introduced.)
+  - [x] 8.5 CHECK PHASE: Run `pnpm check` with bash.
+
+- [ ] 9.0 Final verification
+  - [x] 9.1 Run `pnpm format` with bash.
+  - [x] 9.2 Run `pnpm lint` with bash.
+  - [x] 9.3 Run `pnpm typecheck` with bash.
+  - [ ] 9.4 Run `pnpm test` with bash. (Timed out after 40 minutes before a final result.)
+  - [ ] 9.5 Run `pnpm build` with bash.
+  - [ ] 9.6 Run `pnpm check:all` if available; otherwise confirm the commands above cover lint, typecheck, test, and build.
+  - [x] 9.7 If any final command fails, STOP and report the failing command, failure summary, and what PRD/task ambiguity allowed the issue.
+  - [ ] 9.8 Commit message: `feat(delivery): add Discord webhook delivery modes`.

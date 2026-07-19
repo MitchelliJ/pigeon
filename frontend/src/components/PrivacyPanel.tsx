@@ -27,7 +27,9 @@ export default function PrivacyPanel(): JSX.Element {
 
   return (
     <div class="page-wrap">
-      <a class="page-back" href="/">← Back to dashboard</a>
+      <a class="page-back" href="/">
+        ← Back to dashboard
+      </a>
       <h1 class="page-title">Privacy &amp; data</h1>
 
       <section class="card page-card">
@@ -36,11 +38,11 @@ export default function PrivacyPanel(): JSX.Element {
         </div>
         <p class="hint">
           Pigeon is EU-hosted (Hetzner, Germany/Finland). Summaries are made by
-          Mistral AI (France); payments run through Mollie (Netherlands).
-          Pigeon stores sender, subject, a truncated plain-text body and the AI
-          summary — never attachments. Emails are deleted automatically after
-          90 days. Mailbox credentials are encrypted with AES-256-GCM and are
-          never exported or logged.
+          Mistral AI (France); payments run through Mollie (Netherlands). Pigeon
+          stores sender, subject, a truncated plain-text body and the AI summary
+          — never attachments. Emails are deleted automatically after 90 days.
+          Mailbox credentials are encrypted with AES-256-GCM and are never
+          exported or logged.
         </p>
       </section>
 
@@ -52,7 +54,11 @@ export default function PrivacyPanel(): JSX.Element {
           One JSON file with everything Pigeon holds about you: account,
           mailboxes, triaged emails, channels, settings, consents and usage.
         </p>
-        <a class="btn" href={privacy.exportUrl} style={{ "margin-top": "10px" }}>
+        <a
+          class="btn"
+          href={privacy.exportUrl}
+          style={{ "margin-top": "10px" }}
+        >
           Download my data
         </a>
       </section>
@@ -66,7 +72,11 @@ export default function PrivacyPanel(): JSX.Element {
           data are erased within seconds. Only an anonymous hash remains in the
           audit log.
         </p>
-        <form class="modal-form" onSubmit={erase} style={{ "margin-top": "10px" }}>
+        <form
+          class="modal-form"
+          onSubmit={erase}
+          style={{ "margin-top": "10px" }}
+        >
           <div class="field">
             <label class="field-label">Your password</label>
             <input

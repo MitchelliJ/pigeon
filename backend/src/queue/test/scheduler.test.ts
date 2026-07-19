@@ -15,7 +15,11 @@ import { describe, it, expect } from "vitest";
 import { withTestDb } from "../../../test/db";
 import { runMigrations } from "../../migrate/runner";
 import { enqueueSyncJob, enqueueClassifyJob } from "../store";
-import { runSchedulerTick, enqueueDueClassifyJobs } from "../scheduler";
+import {
+  runSchedulerTick,
+  enqueueDueClassifyJobs,
+  scheduleImmediateDeliveries,
+} from "../scheduler";
 import type { Db } from "../../db/index";
 
 async function insertUser(
@@ -52,7 +56,12 @@ async function insertMailbox(
 async function insertEmail(
   db: Db,
   mailboxId: string,
-  overrides?: { summary?: string; category?: string; classifiedAt?: Date },
+  overrides?: {
+    summary?: string;
+    category?: string;
+    classifiedAt?: Date;
+    receivedAt?: Date;
+  },
 ): Promise<string> {
   const rows = await db.query`
     INSERT INTO emails(
@@ -61,11 +70,57 @@ async function insertEmail(
     ) VALUES (
       ${mailboxId}, ${`uid-${Math.random().toString(36).slice(2)}`}, ${false},
       ${"Alice"}, ${"alice@example.com"}, ${"Hello"}, ${"Body text"},
-      ${new Date("2026-01-01T00:00:00Z")},
+      ${overrides?.receivedAt ?? new Date("2026-01-01T00:00:00Z")},
       ${overrides?.summary ?? null}, ${overrides?.category ?? null},
       ${overrides?.classifiedAt ?? null}
     ) RETURNING id`;
   return String(rows[0]?.id);
+}
+
+async function insertChannel(
+  db: Db,
+  userId: string,
+  status: "active" | "error",
+): Promise<string> {
+  const rows = await db.query`
+    INSERT INTO channels(user_id, kind, config_encrypted, status, last_tested_at)
+    VALUES (${userId}, 'discord', 'sealed', ${status}, now())
+    RETURNING id`;
+  return String(rows[0]?.id);
+}
+
+async function insertDeliverySettings(
+  db: Db,
+  userId: string,
+  mode: "daily" | "quiet",
+  baselineAt: Date,
+): Promise<void> {
+  await db.query`
+    INSERT INTO delivery_settings(user_id, mode, delivery_baseline_at)
+    VALUES (${userId}, ${mode}, ${baselineAt})`;
+}
+
+async function insertDeliveryOwner(
+  db: Db,
+  suffix: string,
+  mode: "daily" | "quiet",
+  channelStatus: "active" | "error",
+  baselineAt: Date,
+): Promise<{
+  userId: string;
+  mailboxId: string;
+  channelId: string;
+}> {
+  const userId = await insertUser(db, `${suffix}@example.com`, "free");
+  const mailboxId = await insertMailbox(
+    db,
+    userId,
+    `${suffix}-mb@example.com`,
+    null,
+  );
+  const channelId = await insertChannel(db, userId, channelStatus);
+  await insertDeliverySettings(db, userId, mode, baselineAt);
+  return { userId, mailboxId, channelId };
 }
 
 describe("scheduler", () => {
@@ -262,6 +317,228 @@ describe("scheduler", () => {
       const rows = await db.query`
         SELECT id FROM jobs WHERE payload->>'emailId' = ${emailId}`;
       expect(rows.length).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  it("does not re-enqueue an email whose only summarize_classify job failed while still enqueueing an unclassified sibling", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(
+        db,
+        "classify-failed@example.com",
+        "free",
+      );
+      const mailboxId = await insertMailbox(
+        db,
+        userId,
+        "classify-failed-mb@example.com",
+        null,
+      );
+      const failedEmailId = await insertEmail(db, mailboxId);
+      const siblingEmailId = await insertEmail(db, mailboxId);
+      await db.query`
+        INSERT INTO jobs (type, payload, status)
+        VALUES (
+          'summarize_classify',
+          jsonb_build_object('emailId', ${failedEmailId}::text),
+          'failed'
+        )`;
+
+      await enqueueDueClassifyJobs(db);
+
+      const rows = await db.query`
+        SELECT payload->>'emailId' AS email_id, status
+        FROM jobs
+        WHERE type = 'summarize_classify'
+        ORDER BY email_id`;
+      type ClassifyJobRow = { email_id: string; status: string };
+      const orderedRows = [...(rows as ClassifyJobRow[])].sort(
+        (left, right) =>
+          left.status.localeCompare(right.status) ||
+          left.email_id.localeCompare(right.email_id),
+      );
+      expect(orderedRows).toEqual([
+        { email_id: failedEmailId, status: "failed" },
+        { email_id: siblingEmailId, status: "pending" },
+      ]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("enqueues at most 500 pending summarize_classify jobs per scheduler tick", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "classify-cap@example.com", "free");
+      const mailboxId = await insertMailbox(
+        db,
+        userId,
+        "classify-cap-mb@example.com",
+        null,
+      );
+      for (let index = 0; index < 501; index += 1) {
+        await insertEmail(db, mailboxId);
+      }
+
+      await enqueueDueClassifyJobs(db);
+
+      const rows = await db.query`
+        SELECT count(*)::int AS count FROM jobs WHERE type = 'summarize_classify'`;
+      expect(rows).toEqual([{ count: 500 }]);
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("immediate delivery scheduler", () => {
+  it("filters quiet delivery eligibility and idempotently creates owned attempts and jobs", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const baselineAt = new Date("2026-01-03T09:00:00Z");
+      const classifiedAfter = new Date("2026-01-03T09:05:00Z");
+      const receivedAfter = new Date("2026-01-03T09:01:00Z");
+      const now = new Date("2026-01-03T10:00:00Z");
+
+      const firstQuietOwner = await insertDeliveryOwner(
+        db,
+        "immediate-owner-a",
+        "quiet",
+        "active",
+        baselineAt,
+      );
+      const firstEmailId = await insertEmail(db, firstQuietOwner.mailboxId, {
+        summary: "First action.",
+        category: "requires_action",
+        classifiedAt: classifiedAfter,
+        receivedAt: receivedAfter,
+      });
+      await insertEmail(db, firstQuietOwner.mailboxId, {
+        summary: "Old classification.",
+        category: "requires_action",
+        classifiedAt: new Date("2026-01-03T08:59:00Z"),
+        receivedAt: receivedAfter,
+      });
+      for (const category of ["important", "noise"]) {
+        await insertEmail(db, firstQuietOwner.mailboxId, {
+          summary: `${category} summary.`,
+          category,
+          classifiedAt: classifiedAfter,
+          receivedAt: receivedAfter,
+        });
+      }
+
+      const secondQuietOwner = await insertDeliveryOwner(
+        db,
+        "immediate-owner-b",
+        "quiet",
+        "active",
+        baselineAt,
+      );
+      const secondEmailId = await insertEmail(db, secondQuietOwner.mailboxId, {
+        summary: "Second action.",
+        category: "requires_action",
+        classifiedAt: classifiedAfter,
+        receivedAt: receivedAfter,
+      });
+
+      const dailyOwner = await insertDeliveryOwner(
+        db,
+        "immediate-daily",
+        "daily",
+        "active",
+        baselineAt,
+      );
+      await insertEmail(db, dailyOwner.mailboxId, {
+        summary: "Daily action.",
+        category: "requires_action",
+        classifiedAt: classifiedAfter,
+        receivedAt: receivedAfter,
+      });
+
+      const erroredOwner = await insertDeliveryOwner(
+        db,
+        "immediate-error",
+        "quiet",
+        "error",
+        baselineAt,
+      );
+      await insertEmail(db, erroredOwner.mailboxId, {
+        summary: "Errored channel action.",
+        category: "requires_action",
+        classifiedAt: classifiedAfter,
+        receivedAt: receivedAfter,
+      });
+
+      await Promise.all([
+        scheduleImmediateDeliveries(db, now),
+        scheduleImmediateDeliveries(db, now),
+        scheduleImmediateDeliveries(db, now),
+      ]);
+      await scheduleImmediateDeliveries(db, now);
+
+      const attempts = await db.query`
+        SELECT
+          da.email_id,
+          da.user_id AS attempt_user_id,
+          da.channel_id,
+          da.kind,
+          da.status,
+          m.user_id AS email_user_id,
+          c.user_id AS channel_user_id
+        FROM delivery_attempts da
+        JOIN emails e ON e.id = da.email_id
+        JOIN mailboxes m ON m.id = e.mailbox_id
+        JOIN channels c ON c.id = da.channel_id
+        WHERE da.kind = 'immediate'
+        ORDER BY da.email_id`;
+      const jobs = await db.query`
+        SELECT da.email_id, j.type, j.status
+        FROM jobs j
+        LEFT JOIN delivery_attempts da
+          ON da.id::text = j.payload->>'deliveryAttemptId'
+        WHERE j.type = 'deliver_channel'
+        ORDER BY da.email_id`;
+      const eligible = [
+        {
+          emailId: firstEmailId,
+          userId: firstQuietOwner.userId,
+          channelId: firstQuietOwner.channelId,
+        },
+        {
+          emailId: secondEmailId,
+          userId: secondQuietOwner.userId,
+          channelId: secondQuietOwner.channelId,
+        },
+      ];
+      const expectedAttempts = eligible
+        .map(({ emailId, userId, channelId }) => ({
+          email_id: emailId,
+          attempt_user_id: userId,
+          channel_id: channelId,
+          kind: "immediate",
+          status: "pending",
+          email_user_id: userId,
+          channel_user_id: userId,
+        }))
+        .sort((left, right) => left.email_id.localeCompare(right.email_id));
+      const expectedJobs = eligible
+        .map(({ emailId }) => ({
+          email_id: emailId,
+          type: "deliver_channel",
+          status: "pending",
+        }))
+        .sort((left, right) => left.email_id.localeCompare(right.email_id));
+
+      expect({ attempts, jobs }).toEqual({
+        attempts: expectedAttempts,
+        jobs: expectedJobs,
+      });
     } finally {
       await close();
     }

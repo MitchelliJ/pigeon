@@ -105,7 +105,7 @@ export default function Dashboard(): JSX.Element {
 
               <Sidebar
                 accounts={d().accounts}
-                channels={d().channels}
+                channel={d().channel}
                 digest={d().digest}
                 lastSync={d().lastSync}
                 onChanged={() => void refresh()}

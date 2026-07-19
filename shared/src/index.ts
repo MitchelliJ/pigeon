@@ -51,19 +51,18 @@ export interface Email {
   suggestedAction?: string;
 }
 
-/** Messaging services we can forward notifications to via webhook. */
-export type ChannelKind = "whatsapp" | "signal" | "discord";
+/** Messaging services exposed to the shipped channel UI. */
+export type ChannelKind = "discord";
 
-/** A notification channel + the rule that governs what reaches it. */
+/** A configured notification channel, with secrets intentionally omitted. */
 export interface Channel {
   id: string;
   kind: ChannelKind;
-  label: string;
-  /** Outgoing webhook URL Pigeon posts to. Empty until configured. */
-  webhookUrl: string;
-  /** Only notify this channel for emails at/above this category. */
-  minCategory: Category;
-  enabled: boolean;
+  status: "active" | "error";
+  /** User-safe connection error, never a webhook URL or provider secret. */
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Short day-of-week labels, Monday first. */
@@ -79,16 +78,18 @@ export const WEEKDAYS: Weekday[] = [
   "Sun",
 ];
 
-/** The once-a-day rollup of everything that didn't require action. */
+/** Mutually exclusive delivery policies for channel notifications. */
+export type DeliveryMode = "daily" | "quiet";
+
+/** UTC delivery settings and the last successful daily digest state. */
 export interface Digest {
-  enabled: boolean;
-  /** 24h time string, e.g. "08:00". */
-  time: string;
+  mode: DeliveryMode;
+  /** 24h UTC time string, e.g. "08:00". */
+  digestTime: string;
   /** Days of the week the digest is sent. */
-  days: Weekday[];
-  /** Channel id the digest is delivered to. */
-  channelId: string;
-  lastSent: string;
+  digestDays: readonly Weekday[];
+  timezone: "UTC";
+  lastSuccessfulDigestAt: string | null;
 }
 
 /** Counts that drive the category stat cards. */
@@ -168,7 +169,7 @@ export interface DashboardData {
   stats: Stats;
   emails: Email[];
   accounts: EmailAccount[];
-  channels: Channel[];
+  channel: Channel | null;
   digest: Digest;
   /**
    * When all mailboxes were last synced. Sync runs on a single global

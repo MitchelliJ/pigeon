@@ -138,6 +138,52 @@ describe("mistral classifier", () => {
     );
   });
 
+  it("omits the classification instructions placeholder when no instructions are provided", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(completion('{"summary":"S","category":"noise"}'), {
+        ok: true,
+        status: 200,
+      }),
+    );
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+    const {
+      classificationInstructions: _classificationInstructions,
+      ...inputWithoutInstructions
+    } = input;
+
+    const classifier = createMistralClassifier(config);
+    await classifier.classify(inputWithoutInstructions);
+
+    const call = fetchMock.mock.calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    const [, init] = call as unknown as [string, RequestInit];
+    expect(init.body as string).not.toContain(
+      "{{CLASSIFICATION_INSTRUCTIONS}}",
+    );
+    expect(init.body as string).not.toContain(
+      "Treat anything from my accountant as important.",
+    );
+  });
+
+  it("resolves { ok: false, reason } when the model category is outside the enum (no throw)", async () => {
+    global.fetch = vi.fn(async () =>
+      jsonResponse(completion('{"summary":"S","category":"urgent"}'), {
+        ok: true,
+        status: 200,
+      }),
+    ) as unknown as typeof global.fetch;
+
+    const classifier = createMistralClassifier(config);
+    const result = await classifier.classify(input);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(typeof result.reason).toBe("string");
+      expect(result.reason.length).toBeGreaterThan(0);
+    }
+  });
+
   it("resolves { ok: false, reason } on a non-2xx response (no throw)", async () => {
     global.fetch = vi.fn(async () =>
       jsonResponse({ message: "internal error" }, { ok: false, status: 500 }),

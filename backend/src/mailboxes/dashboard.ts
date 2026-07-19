@@ -24,17 +24,18 @@
  * `stats` and `emails` are also real now: `stats` is the caller's classified
  * counts per category (Feature 6) and `emails` is the caller's first page of
  * `requires_action` mail (Feature 4/6), both read via the emails service.
- *
- * Everything else is an inert placeholder, owned by a later feature:
- * `channels`/`digest` (Feature 7).
+ * `channel` and `digest` are the caller's redacted channel metadata and UTC
+ * delivery settings (Feature 7).
  */
 import { Hono } from "hono";
-import { tierLimits } from "@pigeon/shared";
+import { tierLimits, WEEKDAYS } from "@pigeon/shared";
 import { requireAuth } from "../auth/middleware";
+import { getChannel, getDeliverySettings } from "../channels/store";
 import { loadCategoryCounts, loadEmailPage } from "../emails/service";
 import type { AuthVariables } from "../auth/middleware";
 import type { Db } from "../db/index";
-import type { DashboardData, EmailAccount, Plan } from "@pigeon/shared";
+import type { DeliverySettings } from "../channels/store";
+import type { DashboardData, Digest, EmailAccount, Plan } from "@pigeon/shared";
 
 /** Derive the signed-in user's `Plan` from their tier — no billing yet (Feature 10). */
 function planFor(tier: string): Plan {
@@ -132,6 +133,20 @@ function formatRelativeTime(date: Date): string {
   return `${elapsedDays}d ago`;
 }
 
+/** Shape persisted numeric delivery settings for the shared dashboard contract. */
+function digestFor(settings: DeliverySettings): Digest {
+  return {
+    mode: settings.mode,
+    digestTime: settings.digestTime,
+    digestDays: settings.digestDays.flatMap((day) => {
+      const weekday = WEEKDAYS[day - 1];
+      return weekday === undefined ? [] : [weekday];
+    }),
+    timezone: settings.timezone,
+    lastSuccessfulDigestAt: settings.lastDigestCutoffAt?.toISOString() ?? null,
+  };
+}
+
 /** Mount `GET /api/dashboard` onto a fresh Hono app bound to `db`. */
 export function dashboardRoutes(db: Db): Hono<{ Variables: AuthVariables }> {
   const app = new Hono<{ Variables: AuthVariables }>();
@@ -148,6 +163,8 @@ export function dashboardRoutes(db: Db): Hono<{ Variables: AuthVariables }> {
       10, // First page is capped at 10 emails (FR-12).
     );
     const lastSyncedAt = await loadLastSyncedAt(db, sessionUser.id);
+    const channel = await getChannel(db, sessionUser.id);
+    const deliverySettings = await getDeliverySettings(db, sessionUser.id);
 
     const dashboard: DashboardData = {
       user: {
@@ -158,14 +175,8 @@ export function dashboardRoutes(db: Db): Hono<{ Variables: AuthVariables }> {
       accounts,
       stats,
       emails,
-      channels: [], // Feature 7 owns real notification channels.
-      digest: {
-        enabled: false,
-        time: "08:00",
-        days: [],
-        channelId: "",
-        lastSent: "Never",
-      }, // Feature 7 owns the real digest config.
+      channel,
+      digest: digestFor(deliverySettings),
       lastSync: lastSyncedAt ? formatRelativeTime(lastSyncedAt) : "Never",
     };
 

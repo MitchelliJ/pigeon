@@ -3,9 +3,13 @@
  * cookie sessions. Every call sends credentials; 401 anywhere but the auth
  * endpoints bounces to /login.
  */
+import { WEEKDAYS } from "@pigeon/shared";
 import type {
   Category,
+  Channel,
+  ChannelKind,
   DashboardData,
+  Digest,
   Email,
   LoginInput,
   PlanTier,
@@ -14,7 +18,6 @@ import type {
   SessionUser,
   SignupInput,
   VerifyEmailInput,
-  Weekday,
 } from "@pigeon/shared";
 
 // Empty string = same-origin, which is what production (and the dev proxy
@@ -158,53 +161,64 @@ export const mailboxes = {
 
 // ---- channels & delivery settings -------------------------------------
 
+type DeliverySettings = Pick<
+  Digest,
+  "mode" | "digestTime" | "digestDays" | "timezone"
+>;
+type DeliverySettingsPatch = Partial<
+  Pick<Digest, "mode" | "digestTime" | "digestDays">
+>;
+type DeliverySettingsResponse = {
+  settings: Omit<DeliverySettings, "digestDays"> & { digestDays: number[] };
+};
+
+function mapDeliverySettings(response: DeliverySettingsResponse): {
+  settings: DeliverySettings;
+} {
+  return {
+    settings: {
+      ...response.settings,
+      digestDays: response.settings.digestDays.flatMap((day) => {
+        const weekday = WEEKDAYS[day - 1];
+        return weekday === undefined ? [] : [weekday];
+      }),
+    },
+  };
+}
+
 export const channels = {
-  create: (input: {
-    kind: string;
-    label: string;
-    config: Record<string, string>;
-    minCategory: Category;
-  }) =>
-    call<{ channel: unknown }>("/api/channels", {
+  get: () =>
+    call<{ channel: Channel | null; supportedKinds: ChannelKind[] }>(
+      "/api/channels",
+    ),
+  create: (input: { kind: "discord"; config: { webhookUrl: string } }) =>
+    call<{ channel: Channel }>("/api/channels", {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  update: (
-    id: string,
-    patch: {
-      label?: string;
-      enabled?: boolean;
-      minCategory?: Category;
-      config?: Record<string, string>;
-    },
-  ) =>
-    call<{ channel: unknown }>(`/api/channels/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
+  test: (id: string) =>
+    call<{ channel: Channel }>(`/api/channels/${id}/test`, {
+      method: "POST",
     }),
   remove: (id: string) =>
     call<{ ok: true }>(`/api/channels/${id}`, { method: "DELETE" }),
-  test: (id: string) =>
-    call<{ ok: true }>(`/api/channels/${id}/test`, { method: "POST" }),
-  supported: () =>
-    call<{ channels: unknown[]; supportedKinds: string[] }>(
-      "/api/channels",
-    ).then((r) => r.supportedKinds),
 };
 
 export const deliverySettings = {
-  update: (patch: {
-    digestEnabled?: boolean;
-    digestTime?: string;
-    digestDays?: Weekday[];
-    digestChannelId?: string;
-    timezone?: string;
-    quietReassurance?: boolean;
-  }) =>
-    call<{ settings: unknown }>("/api/settings/delivery", {
+  get: () =>
+    call<DeliverySettingsResponse>("/api/settings/delivery").then(
+      mapDeliverySettings,
+    ),
+  update: (patch: DeliverySettingsPatch) =>
+    call<DeliverySettingsResponse>("/api/settings/delivery", {
       method: "PATCH",
-      body: JSON.stringify(patch),
-    }),
+      body: JSON.stringify({
+        ...patch,
+        digestDays: patch.digestDays?.map(
+          (weekday) => WEEKDAYS.indexOf(weekday) + 1,
+        ),
+      }),
+    }).then(mapDeliverySettings),
 };
 
 // ---- profile / AI instructions ----------------------------------------

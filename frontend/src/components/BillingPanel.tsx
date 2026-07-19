@@ -15,7 +15,11 @@ function syncLabel(ms: number): string {
 export default function BillingPanel(): JSX.Element {
   const [report, { refetch }] = createResource(() =>
     billing.usage().catch((err) => {
-      if (err instanceof ApiError && err.status === 401 && typeof window !== "undefined") {
+      if (
+        err instanceof ApiError &&
+        err.status === 401 &&
+        typeof window !== "undefined"
+      ) {
         window.location.href = "/login";
       }
       throw err;
@@ -37,11 +41,15 @@ export default function BillingPanel(): JSX.Element {
           window.location.href = result.checkoutUrl;
           return;
         }
-        setNotice(`You're on ${tier} now (sandbox mode — no payment provider configured).`);
+        setNotice(
+          `You're on ${tier} now (sandbox mode — no payment provider configured).`,
+        );
       }
       await refetch();
     } catch (err) {
-      setNotice(err instanceof ApiError ? err.message : "Something went wrong.");
+      setNotice(
+        err instanceof ApiError ? err.message : "Something went wrong.",
+      );
     } finally {
       setBusyTier(null);
     }
@@ -49,10 +57,19 @@ export default function BillingPanel(): JSX.Element {
 
   return (
     <div class="page-wrap">
-      <a class="page-back" href="/">← Back to dashboard</a>
+      <a class="page-back" href="/">
+        ← Back to dashboard
+      </a>
       <h1 class="page-title">Plan &amp; billing</h1>
 
-      <Show when={report()} fallback={<div class="state"><div class="spinner" /></div>}>
+      <Show
+        when={report()}
+        fallback={
+          <div class="state">
+            <div class="spinner" />
+          </div>
+        }
+      >
         {(r) => (
           <>
             <section class="card page-card">
@@ -61,23 +78,32 @@ export default function BillingPanel(): JSX.Element {
               </div>
               <div class="usage" style={{ "margin-bottom": "14px" }}>
                 <div class="usage-label">
-                  {r().usage.emailsProcessed} of {r().limits.monthlyEmailQuota} emails summarized
+                  {r().usage.emailsProcessed} of {r().limits.monthlyEmailQuota}{" "}
+                  emails summarized
                 </div>
                 <div class="usage-track">
                   <div
                     class="usage-fill"
-                    style={{ width: pct(r().usage.emailsProcessed, r().limits.monthlyEmailQuota) }}
+                    style={{
+                      width: pct(
+                        r().usage.emailsProcessed,
+                        r().limits.monthlyEmailQuota,
+                      ),
+                    }}
                   />
                 </div>
               </div>
               <div class="usage">
                 <div class="usage-label">
-                  {r().usage.mailboxes} of {r().limits.maxMailboxes} inboxes connected
+                  {r().usage.mailboxes} of {r().limits.maxMailboxes} inboxes
+                  connected
                 </div>
                 <div class="usage-track">
                   <div
                     class="usage-fill"
-                    style={{ width: pct(r().usage.mailboxes, r().limits.maxMailboxes) }}
+                    style={{
+                      width: pct(r().usage.mailboxes, r().limits.maxMailboxes),
+                    }}
                   />
                 </div>
               </div>
@@ -92,13 +118,22 @@ export default function BillingPanel(): JSX.Element {
                 {(tier) => {
                   const current = () => tier.tier === r().tier;
                   return (
-                    <section class="card plan-card" classList={{ "plan-current": current() }}>
+                    <section
+                      class="card plan-card"
+                      classList={{ "plan-current": current() }}
+                    >
                       <div class="plan-name">{tier.name}</div>
                       <div class="plan-price">{tier.priceLabel ?? "€0"}</div>
                       <ul class="plan-features">
-                        <li>{tier.maxMailboxes} inbox{tier.maxMailboxes === 1 ? "" : "es"}</li>
+                        <li>
+                          {tier.maxMailboxes} inbox
+                          {tier.maxMailboxes === 1 ? "" : "es"}
+                        </li>
                         <li>sync every {syncLabel(tier.syncIntervalMs)}</li>
-                        <li>{tier.monthlyEmailQuota.toLocaleString()} emails / month</li>
+                        <li>
+                          {tier.monthlyEmailQuota.toLocaleString()} emails /
+                          month
+                        </li>
                       </ul>
                       <button
                         class="btn"

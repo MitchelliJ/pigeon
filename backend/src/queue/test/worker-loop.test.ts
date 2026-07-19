@@ -1,24 +1,21 @@
 /*
  * Integration tests for `runWorkerTick` (Job Queue, Workers & Scheduler PRD
- * §3.2 FR-11, §4). A tick claims up to `concurrency` jobs via `claimJobs`,
- * dispatches each by `type` (only `sync_mailbox` has a handler right now,
- * routed to `handleSyncMailboxJob`), runs them concurrently, and completes
- * (`completeJob`) or fails (`failJob`) each based on whether its handler call
- * resolved or rejected.
+ * §3.2 FR-11, §4). A tick claims up to `concurrency` jobs, dispatches each by
+ * type, runs them concurrently, and completes or retries each queue job based
+ * on whether its handler resolves or rejects.
  *
- * Reuses the exact fake `MailboxConnector` + `insertUser`/`insertMailbox` +
- * `createVault(TEST_VAULT_KEY)` seeding pattern from
- * `../handlers/sync-mailbox.test.ts` / `../../sync/test/engine.test.ts`.
- *
- * RED note: at authoring time `../worker-loop` (`runWorkerTick`) does not
- * exist yet — this file is expected to fail at import/module-resolution
- * time, not just at an assertion.
+ * External mailbox, classifier, and channel boundaries use fakes; delivery
+ * configuration still makes the real vault round trip before dispatch.
  */
 import { describe, it, expect } from "vitest";
 import { withTestDb } from "../../../test/db";
 import { runMigrations } from "../../migrate/runner";
 import { createVault } from "../../vault/index";
-import { enqueueSyncJob, enqueueClassifyJob } from "../store";
+import {
+  enqueueSyncJob,
+  enqueueClassifyJob,
+  enqueueDeliveryJob,
+} from "../store";
 import { runWorkerTick } from "../worker-loop";
 import type { Db } from "../../db/index";
 import type { Vault } from "../../vault/index";
@@ -33,6 +30,7 @@ import type {
   ClassifyInput,
   ClassifyResult,
 } from "../../llm/index";
+import type { ChannelConnector, DeliveryMessage } from "../../channels/types";
 
 const TEST_VAULT_KEY = "J371VUEASEUQsYjxvMKhAklLcZOslC7QAGV9/NWQTbY=";
 
@@ -320,6 +318,107 @@ describe("runWorkerTick", () => {
       expect(rows.length).toBe(1);
       expect(rows[0]?.status).toBe("pending");
       expect(rows[0]?.last_error).toContain("boom");
+    } finally {
+      await close();
+    }
+  });
+
+  it("dispatches deliver_channel and routes a retryable connector failure through queue backoff", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "delivery-dispatch@example.com");
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "delivery-dispatch-mb@example.com",
+      );
+      const emailId = await insertEmail(db, mailboxId);
+      await db.query`
+        UPDATE emails
+        SET summary = 'Dispatch summary', category = 'requires_action',
+            classified_at = now()
+        WHERE id = ${emailId}
+      `;
+      const channelRows = await db.query`
+        INSERT INTO channels(
+          user_id, kind, config_encrypted, status, last_tested_at
+        ) VALUES (
+          ${userId}, 'discord',
+          ${vault.seal(JSON.stringify({ webhookUrl: "https://discord.example/fake" }))},
+          'active', now()
+        )
+        RETURNING id
+      `;
+      const channelId = String(channelRows[0]?.id);
+      const attemptRows = await db.query`
+        INSERT INTO delivery_attempts(
+          user_id, channel_id, kind, email_id, status
+        ) VALUES (${userId}, ${channelId}, 'immediate', ${emailId}, 'pending')
+        RETURNING id
+      `;
+      const deliveryAttemptId = String(attemptRows[0]?.id);
+      await enqueueDeliveryJob(db, deliveryAttemptId);
+
+      const messages: DeliveryMessage[] = [];
+      const channelConnector: ChannelConnector<Record<string, unknown>> = {
+        kind: "discord",
+        validateConfig: (input) => input as Record<string, unknown>,
+        async sendTest() {
+          return { ok: true };
+        },
+        async send(_config, message) {
+          messages.push(message);
+          return {
+            ok: false,
+            retryable: true,
+            reason: "Discord request failed",
+          };
+        },
+      };
+      const channelRegistry = {
+        supportedKinds: () => ["discord" as const],
+        get: () => channelConnector,
+      };
+
+      await runWorkerTick(
+        db,
+        vault,
+        5,
+        () => createFakeConnector(),
+        createFakeClassifier(),
+        undefined,
+        channelRegistry,
+      );
+
+      const jobs = await db.query`
+        SELECT status, last_error
+        FROM jobs
+        WHERE payload->>'deliveryAttemptId' = ${deliveryAttemptId}
+      `;
+      const attempts = await db.query`
+        SELECT status, last_error
+        FROM delivery_attempts
+        WHERE id = ${deliveryAttemptId}
+      `;
+      expect({ messages, jobs, attempts }).toEqual({
+        messages: [
+          {
+            type: "immediate",
+            category: "requires_action",
+            summary: "Dispatch summary",
+          },
+        ],
+        jobs: [
+          {
+            status: "pending",
+            last_error: "Discord request failed",
+          },
+        ],
+        attempts: [{ status: "pending", last_error: null }],
+      });
     } finally {
       await close();
     }

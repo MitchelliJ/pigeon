@@ -2,8 +2,8 @@
  * Pigeon worker — queue/scheduler process and lifecycle.
  *
  * The worker hosts the durable job queue + scheduler (Job Queue, Workers &
- * Scheduler PRD §3.2, FR-12): a scheduler tick enqueues due `sync_mailbox`
- * jobs and a worker tick claims + runs them, both on their own intervals
+ * Scheduler PRD §3.2, FR-12): scheduler ticks enqueue due mailbox and channel
+ * delivery work, while worker ticks claim + run jobs on their own interval
  * alongside the pre-existing heartbeat that proves the runtime is alive.
  *
  * The worker opens a validated `Db` pool and a `Vault` at startup (so config
@@ -19,7 +19,14 @@ import { createDb } from "./db/index";
 import type { Db } from "./db/index";
 import { createVault } from "./vault/index";
 import { createLlmClassifier } from "./llm/index";
-import { runSchedulerTick, enqueueDueClassifyJobs } from "./queue/scheduler";
+import { createChannelRegistry } from "./channels/registry";
+import {
+  runSchedulerTick,
+  enqueueDueClassifyJobs,
+  scheduleImmediateDeliveries,
+  scheduleDailyDigests,
+  scheduleQuietHeartbeats,
+} from "./queue/scheduler";
 import { runWorkerTick } from "./queue/worker-loop";
 import { loadDotEnv } from "./env";
 
@@ -31,6 +38,7 @@ if (isMain) {
   const db: Db = createDb(config.DATABASE_URL);
   const vault = createVault(config.VAULT_MASTER_KEY);
   const classifier = createLlmClassifier(config);
+  const channelRegistry = createChannelRegistry({ fetch });
   const HEARTBEAT_MS = config.WORKER_HEARTBEAT_INTERVAL_MS;
 
   console.log("🕊️  Pigeon worker started");
@@ -44,14 +52,20 @@ if (isMain) {
   // left to reject inside `setInterval` (which can't take an async callback
   // without risking an unhandled rejection).
   const schedulerTimer = setInterval(() => {
-    void runSchedulerTick(db).catch((err: unknown) => {
-      console.error("[scheduler] tick failed:", err);
+    const now = new Date();
+    void Promise.all([
+      runSchedulerTick(db),
+      scheduleImmediateDeliveries(db, now),
+      scheduleDailyDigests(db, now),
+      scheduleQuietHeartbeats(db, now),
+    ]).catch(() => {
+      console.error("[scheduler] tick failed");
     });
   }, config.SCHEDULER_INTERVAL_MS);
 
   const classifySchedulerTimer = setInterval(() => {
-    void enqueueDueClassifyJobs(db).catch((err: unknown) => {
-      console.error("[scheduler] classify tick failed:", err);
+    void enqueueDueClassifyJobs(db).catch(() => {
+      console.error("[scheduler] classify tick failed");
     });
   }, config.SCHEDULER_INTERVAL_MS);
 
@@ -63,8 +77,9 @@ if (isMain) {
       undefined,
       classifier,
       config.MAILBOX_CONNECT_TIMEOUT_MS,
-    ).catch((err: unknown) => {
-      console.error("[worker] tick failed:", err);
+      channelRegistry,
+    ).catch(() => {
+      console.error("[worker] tick failed");
     });
   }, config.WORKER_POLL_INTERVAL_MS);
 

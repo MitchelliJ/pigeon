@@ -25,7 +25,7 @@
   --accent-deep: #a94e2c;
   --accent-wash: #f6e6da;
 
-  /* priority */
+  /* categories */
   --requires-action: #cf5238;
   --requires-action-wash: #f9e3dc;
   --important: #cf9226;
@@ -34,8 +34,6 @@
   --noise-wash: #e8efe1;
 
   /* channel hues */
-  --whatsapp: #3aa66b;
-  --signal: #3a76e0;
   --discord: #6a72d6;
 
   /* shape */
@@ -864,6 +862,53 @@ code {
 }
 .inbox-state.disconnected {
   color: var(--accent);
+}
+
+.channel-summary {
+  cursor: default;
+}
+
+.channel-summary:hover {
+  background: transparent;
+}
+
+.channel-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 6px;
+}
+
+.channel-action {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.channel-action:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.channel-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.channel-disconnect {
+  color: var(--requires-action);
+}
+
+.channel-error {
+  margin: 0;
+  padding: 0 6px;
+  color: var(--requires-action);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 /* digest card */

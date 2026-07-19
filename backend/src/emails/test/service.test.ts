@@ -13,10 +13,15 @@
  * ciphertext.
  */
 import { describe, it, expect } from "vitest";
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { withTestDb } from "../../../test/db";
 import { runMigrations } from "../../migrate/runner";
-import { loadCategoryCounts, loadEmailPage } from "../service";
+import {
+  InvalidCursorError,
+  loadCategoryCounts,
+  loadEmailPage,
+} from "../service";
 import type { Db } from "../../db/index";
 import type { Email } from "@pigeon/shared";
 
@@ -146,6 +151,35 @@ describe("loadCategoryCounts", () => {
 });
 
 describe("loadEmailPage", () => {
+  it.each([
+    ["not valid base64", "%%%"],
+    ["valid base64 but non-JSON", Buffer.from("nope").toString("base64")],
+    [
+      "JSON wrong shape",
+      Buffer.from(
+        JSON.stringify({ receivedAt: "2026-01-01T00:00:00.000Z" }),
+      ).toString("base64"),
+    ],
+    [
+      "unparseable receivedAt",
+      Buffer.from(
+        JSON.stringify({ receivedAt: "not-a-date", id: randomUUID() }),
+      ).toString("base64"),
+    ],
+  ])("throws InvalidCursorError for %s cursor", async (_name, cursor) => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "bad-cursor@example.com");
+
+      await expect(
+        loadEmailPage(db, userId, "requires_action", cursor, 10),
+      ).rejects.toBeInstanceOf(InvalidCursorError);
+    } finally {
+      await close();
+    }
+  });
+
   it("returns only the requested category, newest received_at first", async () => {
     const { db, close } = await withTestDb();
     try {

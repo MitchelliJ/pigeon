@@ -11,7 +11,10 @@ import type { MailboxConnector } from "../mailboxes/connectors/types";
 import { getConnector } from "../mailboxes/connectors/index";
 import { mockLlmClassifier } from "../llm/index";
 import type { LlmClassifier } from "../llm/index";
+import { createChannelRegistry } from "../channels/registry";
+import type { ChannelRegistry } from "../channels/registry";
 import { claimJobs, completeJob, failJob } from "./store";
+import { handleDeliverChannelJob } from "./handlers/deliver-channel";
 import { handleSyncMailboxJob } from "./handlers/sync-mailbox";
 import { handleSummarizeClassifyJob } from "./handlers/summarize-classify";
 import type { Job } from "./types";
@@ -26,6 +29,7 @@ export async function runWorkerTick(
   ) => MailboxConnector = getConnector,
   classifier: LlmClassifier = mockLlmClassifier,
   connectTimeoutMs?: number,
+  channelRegistry: ChannelRegistry = createChannelRegistry({ fetch }),
 ): Promise<void> {
   const jobs = await claimJobs(db, concurrency);
 
@@ -44,6 +48,13 @@ export async function runWorkerTick(
           db,
           job.payload as { emailId: string },
           () => classifier,
+        );
+      case "deliver_channel":
+        return handleDeliverChannelJob(
+          db,
+          vault,
+          job.payload as { deliveryAttemptId: string },
+          channelRegistry,
         );
       default: {
         // JobType is a closed set — any addition here must add a matching

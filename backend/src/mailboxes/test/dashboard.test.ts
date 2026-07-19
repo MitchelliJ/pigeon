@@ -17,6 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { TIERS } from "@pigeon/shared";
+import type { DashboardData } from "@pigeon/shared";
 import { withTestDb } from "../../../test/db";
 import { runMigrations } from "../../migrate/runner";
 import { createVault } from "../../vault/index";
@@ -145,7 +146,7 @@ async function insertClassifiedEmail(
 }
 
 describe("GET /api/dashboard", () => {
-  it("assembles user/plan, real accounts, and inert channel/digest placeholders (stats/emails are covered by a dedicated test)", async () => {
+  it("assembles user/plan, real accounts, and approved channel/digest defaults (stats/emails are covered by a dedicated test)", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -177,8 +178,14 @@ describe("GET /api/dashboard", () => {
         accounts: Array<Record<string, unknown>>;
         stats: unknown;
         emails: unknown;
-        channels: unknown;
-        digest: { enabled: boolean };
+        channel: unknown;
+        digest: {
+          mode: string;
+          digestTime: string;
+          digestDays: string[];
+          timezone: string;
+          lastSuccessfulDigestAt: string | null;
+        };
         lastSync: string;
       };
 
@@ -208,8 +215,20 @@ describe("GET /api/dashboard", () => {
         noise: 0,
       });
       expect(body.emails).toEqual([]);
-      expect(body.channels).toEqual([]);
-      expect(body.digest.enabled).toBe(false);
+      expect(body.channel).toBeNull();
+      expect(body.digest.mode).toBe("daily");
+      expect(body.digest.digestTime).toBe("08:00");
+      expect(body.digest.digestDays).toEqual([
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat",
+        "Sun",
+      ]);
+      expect(body.digest.timezone).toBe("UTC");
+      expect(body.digest.lastSuccessfulDigestAt).toBeNull();
       expect(body.lastSync).toBe("Never");
     } finally {
       await close();
@@ -480,6 +499,94 @@ describe("GET /api/dashboard", () => {
       const body = (await res.json()) as { lastSync: string };
       expect(body.lastSync).toMatch(/ago$/);
       expect(body.lastSync).not.toBe("Never");
+    } finally {
+      await close();
+    }
+  });
+
+  it("returns only the authenticated user's redacted channel and real delivery settings", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const { userId, token } = await createUserWithSession(
+        db,
+        "rhea@example.com",
+        "Rhea Example",
+      );
+      const other = await createUserWithSession(
+        db,
+        "soren@example.com",
+        "Soren Example",
+      );
+      const createdAt = new Date("2026-02-03T04:05:06.000Z");
+      const updatedAt = new Date("2026-02-04T05:06:07.000Z");
+      const lastDigestCutoffAt = new Date("2026-02-05T06:07:08.000Z");
+      const secretCiphertext = "sealed-rhea-webhook-ciphertext";
+      const channelRows = await db.query`
+        INSERT INTO channels(
+          user_id, kind, config_encrypted, status, last_error, last_tested_at,
+          created_at, updated_at
+        ) VALUES (
+          ${userId}, 'discord', ${secretCiphertext}, 'error',
+          'Webhook must be reconnected', ${updatedAt}, ${createdAt}, ${updatedAt}
+        )
+        RETURNING id
+      `;
+      await db.query`
+        INSERT INTO delivery_settings(
+          user_id, mode, digest_time, digest_days, delivery_baseline_at,
+          last_digest_cutoff_at
+        ) VALUES (
+          ${userId}, 'daily', '14:35', ${[1, 3, 7]}, ${createdAt},
+          ${lastDigestCutoffAt}
+        )
+      `;
+      await db.query`
+        INSERT INTO channels(
+          user_id, kind, config_encrypted, status, last_tested_at
+        ) VALUES (
+          ${other.userId}, 'discord', 'sealed-other-user-webhook', 'active', now()
+        )
+      `;
+      await db.query`
+        INSERT INTO delivery_settings(
+          user_id, mode, digest_time, digest_days, delivery_baseline_at
+        ) VALUES (
+          ${other.userId}, 'quiet', '23:59', ${[2, 4, 6]}, now()
+        )
+      `;
+
+      const res = await dashboardRoutes(db).request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+      const body = (await res.json()) as DashboardData;
+
+      expect({
+        status: res.status,
+        channel: body.channel,
+        digest: body.digest,
+        containsStoredSecret: JSON.stringify(body).includes(secretCiphertext),
+        containsConfigField: JSON.stringify(body).includes("config_encrypted"),
+      }).toEqual({
+        status: 200,
+        channel: {
+          id: String(channelRows[0]?.id),
+          kind: "discord",
+          status: "error",
+          lastError: "Webhook must be reconnected",
+          createdAt: createdAt.toISOString(),
+          updatedAt: updatedAt.toISOString(),
+        },
+        digest: {
+          mode: "daily",
+          digestTime: "14:35",
+          digestDays: ["Mon", "Wed", "Sun"],
+          timezone: "UTC",
+          lastSuccessfulDigestAt: lastDigestCutoffAt.toISOString(),
+        },
+        containsStoredSecret: false,
+        containsConfigField: false,
+      });
     } finally {
       await close();
     }

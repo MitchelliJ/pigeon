@@ -11,12 +11,7 @@ import prettier from "eslint-config-prettier";
 export default tseslint.config(
   // Never lint build output or generated files.
   {
-    ignores: [
-      "**/dist/**",
-      "**/node_modules/**",
-      "**/.astro/**",
-      "**/*.d.ts",
-    ],
+    ignores: ["**/dist/**", "**/node_modules/**", "**/.astro/**", "**/*.d.ts"],
   },
 
   // Baseline for all JS/TS.

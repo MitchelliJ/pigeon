@@ -102,7 +102,11 @@ export default function ProfileMenu(props: {
             </Show>
 
             <Show when={plan().canUpgrade}>
-              <a class="btn btn-primary upgrade-btn" href="/billing" onClick={close}>
+              <a
+                class="btn btn-primary upgrade-btn"
+                href="/billing"
+                onClick={close}
+              >
                 <SparklesIcon />
                 Upgrade plan
               </a>
@@ -111,15 +115,30 @@ export default function ProfileMenu(props: {
 
           {/* actions */}
           <div class="profile-menu">
-            <a class="profile-item" role="menuitem" href="/settings" onClick={close}>
+            <a
+              class="profile-item"
+              role="menuitem"
+              href="/settings"
+              onClick={close}
+            >
               <GearIcon />
               Settings
             </a>
-            <a class="profile-item" role="menuitem" href="/billing" onClick={close}>
+            <a
+              class="profile-item"
+              role="menuitem"
+              href="/billing"
+              onClick={close}
+            >
               <SparklesIcon />
               Plan &amp; billing
             </a>
-            <a class="profile-item" role="menuitem" href="/privacy" onClick={close}>
+            <a
+              class="profile-item"
+              role="menuitem"
+              href="/privacy"
+              onClick={close}
+            >
               <HelpIcon />
               Privacy &amp; data
             </a>

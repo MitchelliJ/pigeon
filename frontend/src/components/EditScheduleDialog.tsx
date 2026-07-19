@@ -6,22 +6,26 @@ import { WEEKDAYS } from "@pigeon/shared";
 import { formatTime } from "../lib/format";
 import { CloseIcon } from "./visuals";
 
+function scheduleDays(incoming: readonly Weekday[]): Set<Weekday> {
+  return new Set(incoming.length > 0 ? incoming : WEEKDAYS);
+}
+
 export default function EditScheduleDialog(props: {
   open: boolean;
   time: string;
-  days: Weekday[];
+  days: readonly Weekday[];
   onClose: () => void;
-  onSave: (time: string, days: Weekday[]) => void;
+  onSave: (time: string, days: readonly Weekday[]) => void;
 }): JSX.Element {
   const [time, setTime] = createSignal(untrack(() => props.time));
   const [days, setDays] = createSignal<Set<Weekday>>(
-    untrack(() => new Set(props.days)),
+    untrack(() => scheduleDays(props.days)),
   );
 
   createEffect(() => {
     if (props.open) {
       setTime(props.time);
-      setDays(new Set(props.days));
+      setDays(scheduleDays(props.days));
     }
   });
 
@@ -69,7 +73,7 @@ export default function EditScheduleDialog(props: {
             </div>
 
             <div class="field">
-              <label class="field-label">Send at</label>
+              <label class="field-label">Send at (UTC)</label>
               <div class="time-pick">
                 <input
                   class="input"
@@ -77,7 +81,7 @@ export default function EditScheduleDialog(props: {
                   value={time()}
                   onInput={(e) => setTime(e.currentTarget.value)}
                 />
-                <span class="time-preview">{formatTime(time())}</span>
+                <span class="time-preview">{formatTime(time())} UTC</span>
               </div>
             </div>
 

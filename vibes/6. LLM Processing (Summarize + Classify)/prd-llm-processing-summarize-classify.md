@@ -146,6 +146,13 @@ matching the DB column this feature adds.
   - A malformed/non-JSON response from the real provider is surfaced as
     `{ ok: false, reason }`, same discipline as `resend.ts`'s non-2xx
     handling — never thrown directly.
+  - The `category` field is **validated against the three-value enum** before
+    returning `{ ok: true }`; a value outside
+    `requires_action`/`important`/`noise` is surfaced as `{ ok: false, reason }`
+    too. This must not be cast blindly onto the result — an unexpected value
+    would otherwise reach the DB and trip the `emails.category` CHECK
+    constraint (FR-1), turning a bad model reply into an opaque
+    constraint-violation job failure instead of a clear reason.
 
 ### 3.3 Queue wiring (additive to `backend/src/queue/`)
 
@@ -156,12 +163,38 @@ DO NOTHING`.
 - **FR-9.** Classify scheduler tick — a new exported function (e.g.
   `enqueueDueClassifyJobs(db)` in `backend/src/queue/scheduler.ts`, called
   alongside the existing sync scheduler tick on the same
-  `SCHEDULER_INTERVAL_MS` timer in `worker.ts` — no new env var): `SELECT id
-FROM emails WHERE summary IS NULL ORDER BY received_at LIMIT 500`, then
-  `enqueueClassifyJob` for each. The batch cap bounds each tick's work; a
-  backlog larger than 500 is simply picked up across multiple ticks. The
-  partial unique index (FR-4) absorbs the case where an email's job is
-  already in flight — same non-duplicating design as the sync scheduler.
+  `SCHEDULER_INTERVAL_MS` timer in `worker.ts` — no new env var). It selects
+  unclassified emails that do **not** already have a dead-lettered
+  (`status = 'failed'`) classify job, then `enqueueClassifyJob` for each:
+
+  ```sql
+  SELECT e.id
+  FROM emails e
+  WHERE e.summary IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM jobs j
+      WHERE j.type = 'summarize_classify'
+        AND j.payload->>'emailId' = e.id::text
+        AND j.status = 'failed'
+    )
+  ORDER BY e.received_at
+  LIMIT 500
+  ```
+
+  The batch cap bounds each tick's work; a backlog larger than 500 is simply
+  picked up across multiple ticks. The partial unique index (FR-4) absorbs the
+  case where an email's job is already **in flight** (`pending`/`running`) —
+  same non-duplicating design as the sync scheduler. The `NOT EXISTS` clause
+  handles the case that index does _not_: it only covers in-flight jobs, so
+  once a classify job **dead-letters** (`status = 'failed'` after exhausting
+  its 3 attempts — e.g. a missing/expired `MISTRAL_API_KEY` or a model that
+  keeps returning un-parseable output), the email's `summary` stays `NULL`
+  forever and, without this exclusion, every tick would re-enqueue it — an
+  unbounded-growth `jobs` loop that also re-bills Mistral for work that cannot
+  succeed. Excluding dead-lettered emails is what actually realizes §4 / OQ2's
+  "a permanently-failing email just stays unclassified" (an operator who fixes
+  the root cause can delete the `failed` job row to re-arm it).
+
 - **FR-10.** Handler (`backend/src/queue/handlers/summarize-classify.ts`):
   loads the email row (subject, body, from_name, from_address) joined to its
   mailbox's owning user (for `classification_instructions`), calls the
@@ -193,7 +226,14 @@ category IS NOT NULL GROUP BY category`, shaped as `Stats` (FR-15).
   scoped to the caller's own mailboxes only. Returns
   `{ emails: Email[]; nextCursor: string | null }` — `nextCursor` is `null`
   when the category is exhausted, which is what stops the frontend's
-  infinite scroll.
+  infinite scroll. The `cursor` is attacker-supplied (it rides in on the
+  query string), so it is **validated on decode**: a value that isn't valid
+  base64/JSON, is missing its `receivedAt`/`id` fields, or carries an
+  unparseable `receivedAt` timestamp is rejected with
+  `400 { error, code: "invalid_cursor" }` — never allowed to throw a raw
+  `SyntaxError` or reach the SQL as a bad timestamp cast (both of which would
+  surface as a 500). Model this as a typed `InvalidCursorError` thrown by the
+  service's cursor decoder and mapped to the 400 in the route.
 - **FR-14.** `Email.needsAttention` is derived as
   `category === "requires_action"`; `suggestedAction` stays `undefined` for
   every email (the agentic action layer is explicitly deferred per the
@@ -247,22 +287,28 @@ null`) simply stops triggering further fetches — no "end of list" UI is
   categories for representative fixtures (an "invoice due" email, an
   "action needed" email, a newsletter); the real Mistral provider is tested
   against a faked `fetch` (mirroring `resend.test.ts`) for success,
-  malformed-JSON, and non-2xx cases, asserting `{ ok: false, reason }` and
-  no throw.
+  malformed-JSON, non-2xx, and **out-of-enum `category`** cases (a response
+  whose `category` is e.g. `"urgent"` maps to `{ ok: false, reason }`),
+  asserting `{ ok: false, reason }` and no throw.
 - **FR-21.** Queue: `enqueueClassifyJob` idempotency (no duplicate
   in-flight row for the same email); the handler updates `emails`
   (summary/category/classified_at) and completes the job on success; a
   classifier failure routes to `failJob` with its reason; the classify
   scheduler enqueues every `summary IS NULL` row and is a no-op for one
   already in flight; re-running a job for an already-classified email
-  (summary not null) leaves the row untouched.
+  (summary not null) leaves the row untouched; and — for the FR-9
+  dead-letter exclusion — an email whose only `summarize_classify` job is
+  `status = 'failed'` is **not** re-enqueued by a scheduler tick, while a
+  still-unclassified email with no failed job is.
 - **FR-22.** Dashboard: `stats` reflects real grouped counts across the
   caller's mailboxes only; `emails` returns the caller's first page of
   `requires_action` in the correct shape.
 - **FR-23.** `GET /api/emails`: pagination returns a non-null `nextCursor`
   when more rows exist and `null` when exhausted; results are scoped to the
   caller's own mailboxes (no cross-user leakage); an invalid/missing
-  `category` param is rejected with `400`.
+  `category` param is rejected with `400 { code: "invalid_category" }`; and a
+  malformed `cursor` (bad base64/JSON, wrong shape, or unparseable timestamp)
+  is rejected with `400 { code: "invalid_cursor" }` — not a 500.
 - **FR-24.** End-to-end wiring test: seed an unclassified email, run one
   classify-scheduler tick + one worker tick against the mock classifier,
   assert the `emails` row gets a summary/category and the dashboard's
@@ -300,14 +346,17 @@ null`) simply stops triggering further fetches — no "end of list" UI is
    `category`, and `classified_at`, and marks the job `succeeded`.
 3. **AC-3.** A classifier failure retries at the same backoff Feature 5
    already built (1 min, then 5 min) and dead-letters on the 3rd attempt —
-   no new retry code.
+   no new retry code. Once dead-lettered, the email stays unclassified and is
+   **not** re-enqueued by subsequent scheduler ticks (FR-9's `NOT EXISTS`
+   guard), so a permanently-failing email can't loop forever.
 4. **AC-4.** Re-running a `summarize_classify` job for an already-classified
    email (summary not null) leaves the row unchanged.
 5. **AC-5.** `GET /api/dashboard` returns real `stats` (grouped counts) and
    a real first page (≤10) of `requires_action` emails for the caller only.
 6. **AC-6.** `GET /api/emails?category=important&cursor=...` returns the
    next page and eventually `nextCursor: null` once exhausted; it never
-   returns another user's emails.
+   returns another user's emails; a malformed `cursor` yields
+   `400 { code: "invalid_cursor" }` rather than a 500.
 7. **AC-7.** With `MISTRAL_API_KEY` unset, the worker still classifies every
    email (via the mock) — the app is fully demoable without a real key.
 8. **AC-8.** The frontend has zero remaining references to `Priority`,

@@ -309,6 +309,30 @@ describe("GET /api/emails", () => {
     }
   });
 
+  it("rejects a malformed cursor: 400 with invalid_cursor code", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const { token } = await createUserWithSession(
+        db,
+        "hal@example.com",
+        "Hal Example",
+      );
+
+      const app = emailsRoutes(db);
+      const res = await app.request(
+        "/api/emails?category=important&cursor=%25%25%25",
+        { headers: { cookie: `pigeon_session=${token}` } },
+      );
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.code).toBe("invalid_cursor");
+    } finally {
+      await close();
+    }
+  });
+
   it("rejects a request with no session cookie: 401", async () => {
     const { db, close } = await withTestDb();
     try {
