@@ -35,7 +35,7 @@ export interface ConnectMailboxInput {
   password: string;
 }
 
-/** A freshly connected mailbox, shaped for the `POST /api/mailboxes` response. */
+/** A newly created mailbox, shaped for the `POST /api/mailboxes` response. */
 export interface ConnectedMailbox {
   id: string;
   provider: string;
@@ -112,7 +112,7 @@ export async function connectMailbox(
       VALUES (
         ${userId}, ${input.provider}, ${input.protocol}, ${input.label},
         ${input.address}, ${input.host}, ${input.port}, ${input.tls},
-        ${input.username}, ${passwordCiphertext}, 'connected'
+        ${input.username}, ${passwordCiphertext}, 'syncing'
       )
       RETURNING id, provider, label, address, protocol, status
     `;

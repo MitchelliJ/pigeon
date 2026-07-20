@@ -123,16 +123,17 @@ describe("POST /api/mailboxes and DELETE /api/mailboxes/:id", () => {
         label: "Test",
         address: "a@b.com",
         protocol: "imap",
-        status: "connected",
+        status: "syncing",
         unread: 0,
       });
       expect(body.mailbox.id).toBeTruthy();
       expect(typeof body.mailbox.id).toBe("string");
 
       const rows = await db.query`
-        SELECT password_ciphertext FROM mailboxes WHERE user_id = ${userId}
+        SELECT password_ciphertext, status FROM mailboxes WHERE user_id = ${userId}
       `;
       expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("syncing");
       const ciphertext = String(rows[0]?.password_ciphertext);
       expect(ciphertext).not.toBe("app-password-123");
       expect(vault.open(ciphertext)).toBe("app-password-123");

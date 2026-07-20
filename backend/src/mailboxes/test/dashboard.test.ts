@@ -365,6 +365,278 @@ describe("GET /api/dashboard", () => {
     }
   });
 
+  it("reports onboardingPhase ready when the caller has no mailboxes or unclassified emails", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const { token } = await createUserWithSession(
+        db,
+        "ready@example.com",
+        "Ready Example",
+      );
+
+      const res = await dashboardRoutes(db).request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+      const body = (await res.json()) as DashboardData;
+
+      expect({
+        status: res.status,
+        onboardingPhase: body.onboardingPhase,
+      }).toEqual({
+        status: 200,
+        onboardingPhase: "ready",
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("reports onboardingPhase importing for a caller-owned unsynced non-error mailbox", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const { userId, token } = await createUserWithSession(
+        db,
+        "importing@example.com",
+        "Importing Example",
+      );
+      await insertMailbox(
+        db,
+        vault,
+        userId,
+        "importing-inbox@example.com",
+        "Importing Inbox",
+      );
+
+      const res = await dashboardRoutes(db).request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+      const body = (await res.json()) as DashboardData;
+
+      expect({
+        status: res.status,
+        onboardingPhase: body.onboardingPhase,
+      }).toEqual({
+        status: 200,
+        onboardingPhase: "importing",
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("reports onboardingPhase summarizing for a synced caller-owned mailbox with an unclassified email", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const { userId, token } = await createUserWithSession(
+        db,
+        "summarizing@example.com",
+        "Summarizing Example",
+      );
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "summarizing-inbox@example.com",
+        "Summarizing Inbox",
+      );
+      await db.query`
+        UPDATE mailboxes SET last_synced_at = now()
+        WHERE id = ${mailboxId}
+      `;
+      await insertEmail(db, mailboxId, "summary-null-uid", false);
+
+      const res = await dashboardRoutes(db).request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+      const body = (await res.json()) as DashboardData;
+
+      expect({
+        status: res.status,
+        onboardingPhase: body.onboardingPhase,
+      }).toEqual({
+        status: 200,
+        onboardingPhase: "summarizing",
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("reports onboardingPhase error when the caller has no classified emails and an errored mailbox", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const { userId, token } = await createUserWithSession(
+        db,
+        "errored@example.com",
+        "Errored Example",
+      );
+      const mailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "errored-inbox@example.com",
+        "Errored Inbox",
+      );
+      await db.query`
+        UPDATE mailboxes SET status = 'error'
+        WHERE id = ${mailboxId}
+      `;
+
+      const res = await dashboardRoutes(db).request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+      const body = (await res.json()) as DashboardData;
+
+      expect({
+        status: res.status,
+        onboardingPhase: body.onboardingPhase,
+      }).toEqual({
+        status: 200,
+        onboardingPhase: "error",
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("reports onboardingPhase error before importing or summarizing in a mixed caller-owned state", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const { userId, token } = await createUserWithSession(
+        db,
+        "precedence@example.com",
+        "Precedence Example",
+      );
+      const erroredMailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "precedence-error@example.com",
+        "Precedence Error",
+      );
+      await db.query`
+        UPDATE mailboxes SET status = 'error'
+        WHERE id = ${erroredMailboxId}
+      `;
+      await insertMailbox(
+        db,
+        vault,
+        userId,
+        "precedence-importing@example.com",
+        "Precedence Importing",
+      );
+      const unclassifiedMailboxId = await insertMailbox(
+        db,
+        vault,
+        userId,
+        "precedence-summary@example.com",
+        "Precedence Summary",
+      );
+      await db.query`
+        UPDATE mailboxes SET last_synced_at = now()
+        WHERE id = ${unclassifiedMailboxId}
+      `;
+      await insertEmail(
+        db,
+        unclassifiedMailboxId,
+        "precedence-unclassified",
+        false,
+      );
+
+      const res = await dashboardRoutes(db).request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+      const body = (await res.json()) as DashboardData;
+
+      expect({
+        status: res.status,
+        onboardingPhase: body.onboardingPhase,
+      }).toEqual({
+        status: 200,
+        onboardingPhase: "error",
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("scopes onboardingPhase to the caller and ignores another user's unsynced errored unclassified state", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const { token } = await createUserWithSession(
+        db,
+        "scoped@example.com",
+        "Scoped Example",
+      );
+      const other = await createUserWithSession(
+        db,
+        "other-onboarding@example.com",
+        "Other Onboarding",
+      );
+      const otherErroredMailboxId = await insertMailbox(
+        db,
+        vault,
+        other.userId,
+        "other-error@example.com",
+        "Other Error",
+      );
+      await db.query`
+        UPDATE mailboxes SET status = 'error'
+        WHERE id = ${otherErroredMailboxId}
+      `;
+      await insertMailbox(
+        db,
+        vault,
+        other.userId,
+        "other-importing@example.com",
+        "Other Importing",
+      );
+      const otherUnclassifiedMailboxId = await insertMailbox(
+        db,
+        vault,
+        other.userId,
+        "other-summary@example.com",
+        "Other Summary",
+      );
+      await db.query`
+        UPDATE mailboxes SET last_synced_at = now()
+        WHERE id = ${otherUnclassifiedMailboxId}
+      `;
+      await insertEmail(
+        db,
+        otherUnclassifiedMailboxId,
+        "other-unclassified",
+        false,
+      );
+
+      const res = await dashboardRoutes(db).request("/api/dashboard", {
+        headers: { cookie: `pigeon_session=${token}` },
+      });
+      const body = (await res.json()) as DashboardData;
+
+      expect({
+        status: res.status,
+        onboardingPhase: body.onboardingPhase,
+      }).toEqual({
+        status: 200,
+        onboardingPhase: "ready",
+      });
+    } finally {
+      await close();
+    }
+  });
+
   it("rejects a request with no session cookie: 401", async () => {
     const { db, close } = await withTestDb();
     try {

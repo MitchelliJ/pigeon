@@ -12,9 +12,10 @@ import {
   untrack,
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import type { Email, EmailAccount } from "@pigeon/shared";
+import type { Email, EmailAccount, OnboardingPhase } from "@pigeon/shared";
 import { CATEGORY_ORDER } from "@pigeon/shared";
 import { fetchEmails } from "../lib/api";
+import { emptyStateForPhase, filterbarMetaText } from "../lib/onboarding-ui";
 import EmailRow from "./EmailRow";
 
 type Filter = "requires_action" | "important" | "noise";
@@ -54,6 +55,7 @@ function emptyState(): CategoryState {
 export default function EmailList(props: {
   emails: Email[];
   accounts: EmailAccount[];
+  onboardingPhase: OnboardingPhase;
 }): JSX.Element {
   const [filter, setFilter] = createSignal<Filter>("requires_action");
 
@@ -145,6 +147,10 @@ export default function EmailList(props: {
     active()
       .emails.slice()
       .sort((a, b) => CATEGORY_ORDER[b.category] - CATEGORY_ORDER[a.category]),
+  );
+
+  const phaseEmptyState = createMemo(() =>
+    emptyStateForPhase(props.onboardingPhase, visible().length),
   );
 
   /** Fetch page 1 fresh, reconciling it over whatever the category holds. */
@@ -245,7 +251,9 @@ export default function EmailList(props: {
             )}
           </For>
         </div>
-        <span class="filterbar-meta">{visible().length} messages</span>
+        <span class="filterbar-meta">
+          {filterbarMetaText(props.onboardingPhase, visible().length)}
+        </span>
       </div>
 
       {/* table */}
@@ -268,6 +276,15 @@ export default function EmailList(props: {
             <div class="state">
               <div class="spinner" />
             </div>
+          </Match>
+          <Match when={phaseEmptyState()}>
+            {(state) => (
+              <div class="empty">
+                {state().showSpinner && <div class="spinner" />}
+                <div class="empty-title">{state().title}</div>
+                <p>{state().body}</p>
+              </div>
+            )}
           </Match>
           <Match when={true}>
             <div class="empty">

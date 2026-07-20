@@ -2,6 +2,7 @@ import type { JSX } from "solid-js";
 import { createSignal, Match, onCleanup, onMount, Switch } from "solid-js";
 import type { DashboardData } from "@pigeon/shared";
 import { ApiError, fetchDashboard } from "../lib/api";
+import { nextNonReadySinceMs, pollDelayMs } from "../lib/onboarding-ui";
 import TopBar from "./TopBar";
 import Sidebar from "./Sidebar";
 import Hero from "./Hero";
@@ -24,6 +25,9 @@ function DashboardContent(props: {
   initialSettingsOpen?: boolean;
 }): JSX.Element {
   const [data, setData] = createSignal<DashboardData | null>(null);
+  const [nonReadySinceMs, setNonReadySinceMs] = createSignal<number | null>(
+    null,
+  );
   const [failed, setFailed] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(
     props.initialSettingsOpen ?? false,
@@ -39,7 +43,15 @@ function DashboardContent(props: {
     if (inFlight) return;
     inFlight = true;
     try {
-      setData(await fetchDashboard());
+      const nextData = await fetchDashboard();
+      setNonReadySinceMs((previousSinceMs) =>
+        nextNonReadySinceMs(
+          previousSinceMs,
+          nextData.onboardingPhase,
+          Date.now(),
+        ),
+      );
+      setData(nextData);
       setFailed(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) return;
@@ -85,35 +97,46 @@ function DashboardContent(props: {
 
   // Keep the feed fresh: syncs and triage happen in the background worker.
   // A self-rescheduling timer (rather than a fixed setInterval) lets a
-  // visibility-triggered refresh reset the 30s window, so returning to the tab
-  // just as a tick was due doesn't fire two refreshes back to back. Polls are
-  // skipped while the tab is hidden and resume on the next visible tick.
+  // visibility-triggered refresh reset the polling window, so returning to the
+  // tab just as a tick was due doesn't fire two refreshes back to back. Polls
+  // are skipped while the tab is hidden and refresh immediately on return.
   onMount(() => {
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+    const getNextPollDelayMs = () => {
+      const phase = data()?.onboardingPhase ?? "ready";
+
+      return pollDelayMs(phase, nonReadySinceMs(), Date.now());
+    };
     const scheduleNext = () => {
-      timer = setTimeout(tick, 30_000);
+      if (disposed) return;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(tick, getNextPollDelayMs());
     };
     const tick = () => {
-      if (!document.hidden) void refresh();
-      scheduleNext();
+      if (document.hidden) {
+        scheduleNext();
+        return;
+      }
+
+      void refresh().finally(scheduleNext);
     };
     const onVisibility = () => {
       if (document.hidden) return;
-      clearTimeout(timer);
-      void refresh();
-      scheduleNext();
+      if (timer !== undefined) clearTimeout(timer);
+      void refresh().finally(scheduleNext);
     };
 
     const onPopState = () => {
       setSettingsOpen(window.location.pathname === "/settings");
     };
 
-    void refresh();
-    scheduleNext();
+    void refresh().finally(scheduleNext);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("popstate", onPopState);
     onCleanup(() => {
-      clearTimeout(timer);
+      disposed = true;
+      if (timer !== undefined) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("popstate", onPopState);
     });
@@ -157,7 +180,11 @@ function DashboardContent(props: {
                   />
                 </section>
 
-                <EmailList emails={d().emails} accounts={d().accounts} />
+                <EmailList
+                  emails={d().emails}
+                  accounts={d().accounts}
+                  onboardingPhase={d().onboardingPhase}
+                />
               </main>
 
               <Sidebar

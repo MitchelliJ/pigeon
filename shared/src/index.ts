@@ -163,6 +163,9 @@ export interface ResetPasswordInput {
   newPassword: string;
 }
 
+/** Dashboard feedback phase while import or summarization work is pending. */
+export type OnboardingPhase = "importing" | "summarizing" | "error" | "ready";
+
 /** Everything the dashboard needs, in one payload. */
 export interface DashboardData {
   /** The signed-in user — drives the hero greeting and profile menu. */
@@ -178,6 +181,8 @@ export interface DashboardData {
    * e.g. "2m ago".
    */
   lastSync: string;
+  /** Current dashboard feedback phase derived from mailbox and email state. */
+  onboardingPhase: OnboardingPhase;
 }
 
 export const CATEGORY_ORDER: Record<Category, number> = {

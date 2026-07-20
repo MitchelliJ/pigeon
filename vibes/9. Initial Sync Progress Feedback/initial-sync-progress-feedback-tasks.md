@@ -1,0 +1,114 @@
+# Relevant Files
+
+- `vibes/9. Initial Sync Progress Feedback/prd-initial-sync-progress-feedback.md` - Source PRD for the feature.
+- `shared/src/index.ts` - Shared API contract; add `OnboardingPhase` and `DashboardData.onboardingPhase`.
+- `shared/src/__tests__/dashboard-onboarding-phase.test-d.ts` - Compile-time contract test for the new dashboard phase field.
+- `backend/src/mailboxes/service.ts` - Mailbox creation logic; new mailboxes must be persisted/returned as `status = "syncing"`.
+- `backend/src/mailboxes/test/routes.test.ts` - Existing POST mailbox integration tests; update/add assertions for initial `syncing` status.
+- `backend/src/mailboxes/dashboard.ts` - Dashboard assembly; derive and return the onboarding phase.
+- `backend/src/mailboxes/test/dashboard.test.ts` - Integration tests for dashboard phase derivation and precedence.
+- `frontend/src/lib/onboarding-ui.ts` - New pure frontend helpers for phase copy, empty-state selection, and adaptive polling delay.
+- `frontend/src/lib/onboarding-ui.test.ts` - Pure Vitest tests for frontend phase/polling helpers.
+- `vitest.config.ts` - Include pure frontend `*.test.ts` files in the root Vitest suite.
+- `frontend/src/components/Dashboard.tsx` - Wire `onboardingPhase` into adaptive polling and pass it to `EmailList`.
+- `frontend/src/components/EmailList.tsx` - Render phase text in the filter meta line and list-area empty replacement states.
+- `frontend/src/styles/global.css` - Add any small styling needed for list-local onboarding/error states, reusing existing `.empty`, `.spinner`, and `.state-title` patterns where possible.
+
+# Tasks
+
+- [x] 1.0 Add the shared dashboard onboarding phase contract
+  - [x] 1.1 RED: Write `shared/src/__tests__/dashboard-onboarding-phase.test-d.ts` with a compile-time contract test proving:
+    - [x] `OnboardingPhase` accepts exactly `"importing" | "summarizing" | "error" | "ready"`.
+    - [x] `DashboardData` requires `onboardingPhase: OnboardingPhase`.
+    - [x] Invalid phase strings are rejected with `@ts-expect-error`.
+  - [x] 1.2 CONFIRM RED: Run `pnpm --filter @pigeon/shared typecheck` with the bash tool and verify it fails because `OnboardingPhase` / `DashboardData.onboardingPhase` does not exist yet.
+  - [x] 1.3 GREEN: Update `shared/src/index.ts` to export `OnboardingPhase` and add `onboardingPhase: OnboardingPhase` to `DashboardData`.
+  - [x] 1.4 CONFIRM GREEN: Run `pnpm --filter @pigeon/shared typecheck` with the bash tool and verify it passes.
+  - [x] 1.5 REFACTOR: Clean up names/comments in `shared/src/index.ts` without changing behavior; CONFIRM GREEN by re-running `pnpm --filter @pigeon/shared typecheck` with the bash tool.
+  - [x] 1.6 CHECK PHASE: Run `pnpm check` with the bash tool.
+
+- [x] 2.0 Make newly connected mailboxes truthful before first sync
+  - [x] 2.1 RED: Update `backend/src/mailboxes/test/routes.test.ts` so the happy-path `POST /api/mailboxes` test expects:
+    - [x] response `body.mailbox.status === "syncing"`.
+    - [x] persisted `mailboxes.status === "syncing"` for the inserted row.
+    - [x] the existing pending `sync_mailbox` job assertion still passes.
+  - [x] 2.2 CONFIRM RED: Run `pnpm test -- backend/src/mailboxes/test/routes.test.ts` with the bash tool and verify it fails because the service still returns/persists `"connected"`.
+  - [x] 2.3 GREEN: Update `backend/src/mailboxes/service.ts` so the insert explicitly writes `status = "syncing"` and returns that value.
+  - [x] 2.4 CONFIRM GREEN: Run `pnpm test -- backend/src/mailboxes/test/routes.test.ts` with the bash tool and verify it passes.
+  - [x] 2.5 REFACTOR: Keep the change minimal; update comments only if they now imply new mailboxes are immediately connected. CONFIRM GREEN by re-running `pnpm test -- backend/src/mailboxes/test/routes.test.ts` with the bash tool.
+  - [x] 2.6 CHECK PHASE: Run `pnpm check` with the bash tool.
+
+- [x] 3.0 Derive `onboardingPhase` in the dashboard payload
+  - [x] 3.1 RED: Add focused integration tests to `backend/src/mailboxes/test/dashboard.test.ts` for the dashboard phase derivation:
+    - [x] returns `"ready"` for a user with no mailboxes and no unclassified emails.
+    - [x] returns `"importing"` when a caller owns a mailbox with `last_synced_at IS NULL` and non-error status.
+    - [x] returns `"summarizing"` when a caller has at least one email with `summary IS NULL` and no higher-precedence phase.
+    - [x] returns `"error"` when the caller has zero classified emails and at least one mailbox with `status = "error"`.
+    - [x] enforces precedence `error > importing > summarizing > ready` in one explicit mixed-state test.
+    - [x] never counts another user's mailboxes/emails when deriving the phase.
+  - [x] 3.2 CONFIRM RED: Run `pnpm test -- backend/src/mailboxes/test/dashboard.test.ts` with the bash tool and verify the new tests fail because `onboardingPhase` is missing/incorrect.
+  - [x] 3.3 GREEN: Update `backend/src/mailboxes/dashboard.ts` to compute and return `onboardingPhase` using the PRD definitions:
+    - [x] `error`: zero classified emails for the caller and at least one caller-owned mailbox has `status = "error"`.
+    - [x] `importing`: at least one caller-owned mailbox has `last_synced_at IS NULL` and `status <> "error"`.
+    - [x] `summarizing`: at least one caller-owned email has `summary IS NULL`.
+    - [x] `ready`: none of the above.
+    - [x] Scope every query by `sessionUser.id` via the caller's mailboxes.
+    - [x] Do not add a migration or index.
+  - [x] 3.4 CONFIRM GREEN: Run `pnpm test -- backend/src/mailboxes/test/dashboard.test.ts` with the bash tool and verify it passes.
+  - [x] 3.5 REFACTOR: Extract small private helpers inside `dashboard.ts` only if the route body becomes hard to read. Keep SQL local to the dashboard module. CONFIRM GREEN by re-running `pnpm test -- backend/src/mailboxes/test/dashboard.test.ts` with the bash tool.
+  - [x] 3.6 CHECK PHASE: Run `pnpm check` with the bash tool.
+
+- [x] 4.0 Add tested frontend helper logic for phase copy and polling cadence
+  - [x] 4.1 RED: Create `frontend/src/lib/onboarding-ui.test.ts` with pure Vitest tests for:
+    - [x] `phaseMetaText("importing") === "Importing your email…"`.
+    - [x] `phaseMetaText("summarizing") === "Summarizing your email…"`.
+    - [x] `phaseMetaText("error") === "Couldn't sync your mailbox"`.
+    - [x] `phaseMetaText("ready")` returns `null` so the caller can show the message count.
+    - [x] `emptyStateForPhase(phase, visibleCount)` returns the importing/summarizing/error title/body only when `visibleCount === 0`.
+    - [x] `emptyStateForPhase("ready", 0)` returns `null` so the existing empty state can render.
+    - [x] `pollDelayMs("importing" | "summarizing" | "error", nonReadySinceMs, nowMs)` returns `2_000` before 10 continuous minutes and `30_000` after the cap.
+    - [x] `pollDelayMs("ready", ...)` always returns `30_000`.
+  - [x] 4.2 CONFIRM RED: Run `pnpm test -- frontend/src/lib/onboarding-ui.test.ts` with the bash tool and verify it fails because the helper module does not exist yet.
+  - [x] 4.3 GREEN: Create `frontend/src/lib/onboarding-ui.ts` with the minimal pure helpers needed by the tests. Export constants for `FAST_POLL_MS = 2_000`, `NORMAL_POLL_MS = 30_000`, and `FAST_POLL_CAP_MS = 10 * 60 * 1000`.
+  - [x] 4.4 GREEN: Update `vitest.config.ts` so root Vitest includes pure frontend tests under `frontend/src/**/*.test.ts` without requiring browser/DOM test dependencies.
+  - [x] 4.5 CONFIRM GREEN: Run `pnpm test -- frontend/src/lib/onboarding-ui.test.ts` with the bash tool and verify it passes.
+  - [x] 4.6 REFACTOR: Keep copy centralized in `onboarding-ui.ts`; avoid duplicating strings in components. CONFIRM GREEN by re-running `pnpm test -- frontend/src/lib/onboarding-ui.test.ts` with the bash tool.
+  - [x] 4.7 CHECK PHASE: Run `pnpm check` with the bash tool.
+
+- [x] 5.0 Wire adaptive dashboard polling to `onboardingPhase`
+  - [x] 5.1 RED: Extend `frontend/src/lib/onboarding-ui.test.ts` if needed with one behavior not yet covered: the 10-minute fast-poll window resets when the previous phase was `"ready"` and a new non-ready phase starts.
+  - [x] 5.2 CONFIRM RED: Run `pnpm test -- frontend/src/lib/onboarding-ui.test.ts` with the bash tool and verify the new reset behavior fails if it was not already supported.
+  - [x] 5.3 GREEN: Update `frontend/src/components/Dashboard.tsx` to:
+    - [x] Track when `data()?.onboardingPhase` first became non-ready.
+    - [x] Reset that timestamp when the phase returns to `"ready"`.
+    - [x] Schedule the next poll with `pollDelayMs(...)` instead of the hard-coded `30_000`.
+    - [x] Preserve current visibility behavior: skip refresh while hidden, refresh immediately on visibility return, then reschedule from that point.
+    - [x] Pass `d().onboardingPhase` to `EmailList`.
+  - [x] 5.4 CONFIRM GREEN: Run `pnpm test -- frontend/src/lib/onboarding-ui.test.ts` and `pnpm --filter @pigeon/frontend typecheck` with the bash tool and verify both pass.
+  - [x] 5.5 REFACTOR: Keep timer code readable; prefer a small local function over inline nested ternaries. CONFIRM GREEN by re-running `pnpm --filter @pigeon/frontend typecheck` with the bash tool.
+  - [x] 5.6 CHECK PHASE: Run `pnpm check` with the bash tool.
+
+- [x] 6.0 Render phase feedback in the email list meta line and empty area
+  - [x] 6.1 RED: Extend `frontend/src/lib/onboarding-ui.test.ts` with any missing pure helper assertions needed to pin the final list-area copy:
+    - [x] importing title/body match the PRD copy.
+    - [x] summarizing title/body match the PRD copy.
+    - [x] error title/body match the PRD copy and mention remove/reconnect plus automatic retry.
+  - [x] 6.2 CONFIRM RED: Run `pnpm test -- frontend/src/lib/onboarding-ui.test.ts` with the bash tool and verify the new assertions fail if the copy is not yet final.
+  - [x] 6.3 GREEN: Update `frontend/src/components/EmailList.tsx` to accept `onboardingPhase: OnboardingPhase` and:
+    - [x] Show the phase meta text when `onboardingPhase !== "ready"`; otherwise show the existing `"{visible().length} messages"` text.
+    - [x] When `visible().length > 0`, render email rows normally regardless of phase.
+    - [x] When `visible().length === 0` and `emptyStateForPhase(...)` returns a state, render that title/body instead of "Nothing here ✨".
+    - [x] Keep the existing loading spinner state for category page fetches working.
+    - [x] Keep infinite scroll sentinel behavior unchanged.
+  - [x] 6.4 GREEN: Update `frontend/src/styles/global.css` only if the new list-local states need spacing/alignment beyond existing `.empty`, `.empty-title`, and `.spinner`; do not introduce a new visual language.
+  - [x] 6.5 CONFIRM GREEN: Run `pnpm test -- frontend/src/lib/onboarding-ui.test.ts`, `pnpm --filter @pigeon/frontend typecheck`, and `pnpm --filter @pigeon/frontend build` with the bash tool and verify all pass.
+  - [x] 6.6 REFACTOR: Ensure copy strings live in `onboarding-ui.ts`, not duplicated in JSX. CONFIRM GREEN by re-running `pnpm --filter @pigeon/frontend typecheck` with the bash tool.
+  - [x] 6.7 CHECK PHASE: Run `pnpm check` with the bash tool.
+
+- [ ] 7.0 Final verification
+  - [ ] 7.1 Run `pnpm test` with the bash tool and verify all backend/shared/frontend tests pass.
+    - Full run: 369 passed; 3 unrelated failures caused by two 60 s embedded-Postgres timeouts and a cascading mock-mail outbox assertion. All three failed tests passed individually in 9–12 s.
+  - [x] 7.2 Run `pnpm check` with the bash tool and verify lint + typecheck pass.
+  - [x] 7.3 Run `pnpm --filter @pigeon/frontend build` with the bash tool and verify the Astro build passes.
+  - [x] 7.4 If any final verification step fails, STOP and report the exact failing command/output before making additional changes.
+  - [x] 7.5 Commit message: `feat: show initial sync progress in dashboard`.

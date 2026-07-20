@@ -35,7 +35,14 @@ import { loadCategoryCounts, loadEmailPage } from "../emails/service";
 import type { AuthVariables } from "../auth/middleware";
 import type { Db } from "../db/index";
 import type { DeliverySettings } from "../channels/store";
-import type { DashboardData, Digest, EmailAccount, Plan } from "@pigeon/shared";
+import type {
+  DashboardData,
+  Digest,
+  EmailAccount,
+  OnboardingPhase,
+  Plan,
+  Stats,
+} from "@pigeon/shared";
 
 /** Derive the signed-in user's `Plan` from their tier — no billing yet (Feature 10). */
 function planFor(tier: string): Plan {
@@ -133,6 +140,75 @@ function formatRelativeTime(date: Date): string {
   return `${elapsedDays}d ago`;
 }
 
+type OnboardingPhaseSignals = {
+  hasErrorMailbox: boolean;
+  hasImportingMailbox: boolean;
+  hasPendingSummary: boolean;
+};
+
+function countClassifiedEmails(stats: Stats): number {
+  return stats.requires_action + stats.important + stats.noise;
+}
+
+function deriveOnboardingPhase(
+  stats: Stats,
+  signals: OnboardingPhaseSignals,
+): OnboardingPhase {
+  if (countClassifiedEmails(stats) === 0 && signals.hasErrorMailbox) {
+    return "error";
+  }
+  if (signals.hasImportingMailbox) return "importing";
+  if (signals.hasPendingSummary) return "summarizing";
+  return "ready";
+}
+
+/** Load the caller-owned mailbox/email signals used for phase derivation. */
+async function loadOnboardingPhaseSignals(
+  db: Db,
+  userId: string,
+): Promise<OnboardingPhaseSignals> {
+  const rows = await db.query`
+    SELECT
+      EXISTS (
+        SELECT 1
+        FROM mailboxes
+        WHERE user_id = ${userId}
+          AND status = 'error'
+      ) AS has_error_mailbox,
+      EXISTS (
+        SELECT 1
+        FROM mailboxes
+        WHERE user_id = ${userId}
+          AND last_synced_at IS NULL
+          AND status <> 'error'
+      ) AS has_importing_mailbox,
+      EXISTS (
+        SELECT 1
+        FROM emails e
+        JOIN mailboxes m ON m.id = e.mailbox_id
+        WHERE m.user_id = ${userId}
+          AND e.summary IS NULL
+      ) AS has_pending_summary
+  `;
+  const state = rows[0];
+
+  return {
+    hasErrorMailbox: state?.has_error_mailbox === true,
+    hasImportingMailbox: state?.has_importing_mailbox === true,
+    hasPendingSummary: state?.has_pending_summary === true,
+  };
+}
+
+/** Derive the dashboard feedback phase from caller-owned mailbox/email state. */
+async function loadOnboardingPhase(
+  db: Db,
+  userId: string,
+  stats: Stats,
+): Promise<OnboardingPhase> {
+  const signals = await loadOnboardingPhaseSignals(db, userId);
+  return deriveOnboardingPhase(stats, signals);
+}
+
 /** Shape persisted numeric delivery settings for the shared dashboard contract. */
 function digestFor(settings: DeliverySettings): Digest {
   return {
@@ -162,6 +238,11 @@ export function dashboardRoutes(db: Db): Hono<{ Variables: AuthVariables }> {
       undefined, // undefined cursor = first page.
       10, // First page is capped at 10 emails (FR-12).
     );
+    const onboardingPhase = await loadOnboardingPhase(
+      db,
+      sessionUser.id,
+      stats,
+    );
     const lastSyncedAt = await loadLastSyncedAt(db, sessionUser.id);
     const channel = await getChannel(db, sessionUser.id);
     const deliverySettings = await getDeliverySettings(db, sessionUser.id);
@@ -178,6 +259,7 @@ export function dashboardRoutes(db: Db): Hono<{ Variables: AuthVariables }> {
       channel,
       digest: digestFor(deliverySettings),
       lastSync: lastSyncedAt ? formatRelativeTime(lastSyncedAt) : "Never",
+      onboardingPhase,
     };
 
     return c.json(dashboard, 200);
