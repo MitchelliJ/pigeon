@@ -56,6 +56,7 @@ export default function EmailList(props: {
   emails: Email[];
   accounts: EmailAccount[];
   onboardingPhase: OnboardingPhase;
+  timezone: string;
 }): JSX.Element {
   const [filter, setFilter] = createSignal<Filter>("requires_action");
 
@@ -266,6 +267,7 @@ export default function EmailList(props: {
                   email={email}
                   account={accountById().get(email.accountId)}
                   index={i()}
+                  timezone={props.timezone}
                   expanded={expandedIds().has(email.id)}
                   onToggle={() => toggleExpanded(email.id)}
                 />

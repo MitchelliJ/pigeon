@@ -184,6 +184,7 @@ function DashboardContent(props: {
                   emails={d().emails}
                   accounts={d().accounts}
                   onboardingPhase={d().onboardingPhase}
+                  timezone={d().digest.timezone}
                 />
               </main>
 

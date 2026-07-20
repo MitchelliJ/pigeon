@@ -1,6 +1,7 @@
 import type { JSX } from "solid-js";
 import { Show } from "solid-js";
 import type { Email, EmailAccount } from "@pigeon/shared";
+import { formatDateTime } from "../lib/format";
 import {
   avatarColor,
   initialsOf,
@@ -13,6 +14,7 @@ export default function EmailRow(props: {
   email: Email;
   account: EmailAccount | undefined;
   index: number;
+  timezone: string;
   // Expansion is controlled by the parent (keyed by email id) so it survives
   // the list's background reconcile — see EmailList's `expandedIds`.
   expanded: boolean;
@@ -47,7 +49,9 @@ export default function EmailRow(props: {
       <div class="email-body">
         <div class="email-row">
           <div class="email-subject">{email().subject}</div>
-          <div class="email-time">{email().receivedAt}</div>
+          <div class="email-time">
+            {formatDateTime(email().receivedAt, props.timezone)}
+          </div>
         </div>
 
         <div class="email-from">
