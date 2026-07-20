@@ -48,19 +48,29 @@ export default function EmailRow(props: {
 
       <div class="email-body">
         <div class="email-row">
-          <div class="email-subject">{email().subject}</div>
-          <div class="email-time">
-            {formatDateTime(email().receivedAt, props.timezone)}
-          </div>
+          <p class="email-summary">
+            <span class="ai-spark">
+              <SparklesIcon />
+            </span>
+            <span>{email().summary}</span>
+          </p>
         </div>
 
         <div class="email-from">
-          {email().fromName}
+          <div class="email-meta-main">
+            <span class="email-subject" title={email().subject}>
+              <span class="email-meta-label">Subject:</span> {email().subject}
+            </span>
+            <span>
+              <span class="email-meta-label">Sender:</span> {email().fromName}
+            </span>
+            <span>{formatDateTime(email().receivedAt, props.timezone)}</span>
+          </div>
           <Show when={props.account}>
             {(a) => {
               const v = providerVisual(a().provider);
               return (
-                <span class="badge" title={a().address}>
+                <span class="badge email-mailbox" title={a().address}>
                   <span class="badge-dot" style={{ background: v.bg }}>
                     {v.initials}
                   </span>
@@ -70,13 +80,6 @@ export default function EmailRow(props: {
             }}
           </Show>
         </div>
-
-        <p class="email-summary">
-          <span class="ai-spark">
-            <SparklesIcon />
-          </span>
-          <em>{email().summary}</em>
-        </p>
 
         <Show when={props.expanded}>
           <div class="email-full">{email().body}</div>
