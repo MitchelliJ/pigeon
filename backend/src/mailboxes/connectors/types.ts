@@ -47,6 +47,7 @@ export type TestConnectionResult = { ok: true } | { ok: false; reason: string };
  */
 export type FetchedMessage = {
   providerUid: string;
+  rfcMessageId?: string;
   fromName: string;
   fromAddress: string;
   subject: string;

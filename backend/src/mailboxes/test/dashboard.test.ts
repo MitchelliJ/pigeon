@@ -104,7 +104,7 @@ async function insertMailboxWithProtocol(
   return String(rows[0]?.id);
 }
 
-/** Insert a minimal-but-valid `emails` row for `mailboxId`. */
+/** Insert a minimal canonical message and its mailbox occurrence. */
 async function insertEmail(
   db: Db,
   mailboxId: string,
@@ -112,20 +112,22 @@ async function insertEmail(
   seen: boolean,
 ): Promise<void> {
   await db.query`
-    INSERT INTO emails (
-      mailbox_id, provider_uid, seen, from_name, from_address, subject, body, received_at
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body, received_at
+      )
+      SELECT user_id, ${providerUid}, 'A', 'a@example.com', 'S', 'B', now()
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
     )
-    VALUES (
-      ${mailboxId}, ${providerUid}, ${seen}, 'A', 'a@example.com', 'S', 'B', now()
-    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, ${seen} FROM inserted
   `;
 }
 
 /**
- * Insert a classified `emails` row for `mailboxId`. Mirrors `insertEmail`
- * above, but a classified row always carries `summary`, `category`, and
- * `classified_at` — the fields the dashboard's real `stats`/`emails` reads key
- * off. `provider_uid` is a fresh UUID so rows never collide within a mailbox.
+ * Insert a classified canonical message and its mailbox occurrence.
+ * `provider_uid` is a fresh UUID so rows never collide within a mailbox.
  */
 async function insertClassifiedEmail(
   db: Db,
@@ -133,15 +135,21 @@ async function insertClassifiedEmail(
   overrides: { category: string; receivedAt?: Date; subject?: string },
 ): Promise<void> {
   const { category, receivedAt = new Date(), subject = "S" } = overrides;
+  const providerUid = randomUUID();
   await db.query`
-    INSERT INTO emails (
-      mailbox_id, provider_uid, seen, from_name, from_address, subject, body,
-      received_at, summary, category, classified_at
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body,
+        received_at, summary, category, classified_at
+      )
+      SELECT
+        user_id, ${providerUid}, 'A', 'a@example.com', ${subject}, 'B',
+        ${receivedAt}, 'placeholder summary', ${category}, now()
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
     )
-    VALUES (
-      ${mailboxId}, ${randomUUID()}, false, 'A', 'a@example.com', ${subject},
-      'B', ${receivedAt}, 'placeholder summary', ${category}, now()
-    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, false FROM inserted
   `;
 }
 

@@ -82,11 +82,11 @@ export async function enqueueSyncJob(db: Db, mailboxId: string): Promise<void> {
  */
 export async function enqueueClassifyJob(
   db: Db,
-  emailId: string,
+  messageId: string,
 ): Promise<void> {
   await db.query`
     INSERT INTO jobs (type, payload)
-    VALUES ('summarize_classify', jsonb_build_object('emailId', ${emailId}::text))
+    VALUES ('summarize_classify', jsonb_build_object('messageId', ${messageId}::text))
     ON CONFLICT DO NOTHING
   `;
 }

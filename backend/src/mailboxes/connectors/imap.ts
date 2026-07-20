@@ -67,6 +67,7 @@ async function parseFetchedImapMessage(item: {
 
   return {
     providerUid: String(item.uid),
+    ...(parsed.messageId ? { rfcMessageId: parsed.messageId } : {}),
     fromName: from?.name ?? "",
     fromAddress: from?.address ?? "",
     subject: parsed.subject ?? "",

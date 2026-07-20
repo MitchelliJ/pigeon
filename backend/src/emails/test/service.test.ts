@@ -59,10 +59,8 @@ async function insertMailbox(
 }
 
 /**
- * Insert a minimal valid `emails` row for `mailboxId`. A classified row always
- * carries both `summary` and `classified_at`, so when `category` is provided we
- * set all three; when it is omitted the row stays unclassified (all NULL).
- * Returns the new email id.
+ * Insert a canonical message and its mailbox occurrence. A classified message
+ * carries summary, category, and classified_at; otherwise all three are NULL.
  */
 async function insertEmail(
   db: Db,
@@ -73,18 +71,24 @@ async function insertEmail(
   const classified = category !== undefined;
   const summary = classified ? "placeholder summary" : null;
   const classifiedAt = classified ? new Date() : null;
+  const providerUid = randomUUID();
   const rows = await db.query`
-    INSERT INTO emails (
-      mailbox_id, provider_uid, seen, from_name, from_address, subject, body,
-      received_at, summary, category, classified_at
+    WITH inserted AS (
+      INSERT INTO messages (
+        user_id, identity_key, from_name, from_address, subject, body,
+        received_at, summary, category, classified_at
+      )
+      SELECT
+        user_id, ${providerUid}, 'A', 'a@example.com', ${subject}, 'B',
+        ${receivedAt}, ${summary}, ${category ?? null}, ${classifiedAt}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
     )
-    VALUES (
-      ${mailboxId}, ${randomUUID()}, false, 'A', 'a@example.com', ${subject},
-      'B', ${receivedAt}, ${summary}, ${category ?? null}, ${classifiedAt}
-    )
-    RETURNING id
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, false FROM inserted
+    RETURNING message_id
   `;
-  return String(rows[0]?.id);
+  return String(rows[0]?.message_id);
 }
 
 describe("loadCategoryCounts", () => {

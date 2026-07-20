@@ -71,16 +71,16 @@ export async function runSchedulerTick(db: Db): Promise<void> {
  */
 export async function enqueueDueClassifyJobs(db: Db): Promise<void> {
   const rows = await db.query`
-    SELECT e.id
-    FROM emails e
-    WHERE e.summary IS NULL
+    SELECT m.id
+    FROM messages m
+    WHERE m.summary IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM jobs j
         WHERE j.type = 'summarize_classify'
-          AND j.payload->>'emailId' = e.id::text
+          AND j.payload->>'messageId' = m.id::text
           AND j.status = 'failed'
       )
-    ORDER BY e.received_at
+    ORDER BY m.received_at
     LIMIT 500
   `;
   await Promise.all(rows.map((row) => enqueueClassifyJob(db, String(row.id))));
@@ -99,24 +99,23 @@ export async function scheduleImmediateDeliveries(
     await tx`
       WITH inserted_attempts AS (
         INSERT INTO delivery_attempts(
-          user_id, channel_id, kind, email_id, status
+          user_id, channel_id, kind, message_id, status
         )
         SELECT
           m.user_id,
           c.id,
           'immediate',
-          e.id,
+          m.id,
           'pending'
-        FROM emails e
-        JOIN mailboxes m ON m.id = e.mailbox_id
+        FROM messages m
         JOIN delivery_settings ds ON ds.user_id = m.user_id
         JOIN channels c ON c.user_id = m.user_id
         WHERE ds.mode = 'quiet'
           AND c.status = 'active'
-          AND e.category = 'requires_action'
-          AND e.classified_at > ds.delivery_baseline_at
-          AND e.classified_at <= ${now}
-        ORDER BY c.id, e.id
+          AND m.category = 'requires_action'
+          AND m.classified_at > ds.delivery_baseline_at
+          AND m.classified_at <= ${now}
+        ORDER BY c.id, m.id
         ON CONFLICT DO NOTHING
         RETURNING id
       )
@@ -132,8 +131,9 @@ export async function scheduleImmediateDeliveries(
 }
 
 /**
- * Queue the latest due heartbeat for active quiet-mode channels when no
- * successful immediate delivery occurred in its preceding configured window.
+ * Queue the latest due Monday 08:00 local heartbeat for active quiet-mode
+ * channels when no successful immediate delivery occurred in its preceding
+ * weekly window.
  */
 export async function scheduleQuietHeartbeats(
   db: Db,
@@ -156,7 +156,7 @@ export async function scheduleQuietHeartbeats(
          AND c.status = 'active'
         CROSS JOIN LATERAL (
           SELECT
-            (days.local_day::date + ds.digest_time) AT TIME ZONE ds.timezone
+            (days.local_day::date + TIME '08:00') AT TIME ZONE ds.timezone
               AS scheduled_for
           FROM generate_series(
             date_trunc('day', ${now}::timestamptz AT TIME ZONE ds.timezone)
@@ -164,26 +164,18 @@ export async function scheduleQuietHeartbeats(
             date_trunc('day', ${now}::timestamptz AT TIME ZONE ds.timezone),
             INTERVAL '1 day'
           ) AS days(local_day)
-          WHERE EXTRACT(ISODOW FROM days.local_day)::smallint
-                  = ANY(ds.digest_days)
-            AND (days.local_day::date + ds.digest_time)
+          WHERE EXTRACT(ISODOW FROM days.local_day)::smallint = 1
+            AND (days.local_day::date + TIME '08:00')
                   AT TIME ZONE ds.timezone <= ${now}
           ORDER BY scheduled_for DESC
           LIMIT 1
         ) due
         CROSS JOIN LATERAL (
           SELECT
-            (days.local_day::date + ds.digest_time) AT TIME ZONE ds.timezone
-              AS scheduled_for
-          FROM generate_series(
-            (due.scheduled_for AT TIME ZONE ds.timezone)::date - INTERVAL '7 days',
-            (due.scheduled_for AT TIME ZONE ds.timezone)::date - INTERVAL '1 day',
-            INTERVAL '1 day'
-          ) AS days(local_day)
-          WHERE EXTRACT(ISODOW FROM days.local_day)::smallint
-                  = ANY(ds.digest_days)
-          ORDER BY scheduled_for DESC
-          LIMIT 1
+            (
+              (due.scheduled_for AT TIME ZONE ds.timezone)::date - 7
+                + TIME '08:00'
+            ) AT TIME ZONE ds.timezone AS scheduled_for
         ) previous_slot
         WHERE ds.mode = 'quiet'
           AND due.scheduled_for > ds.delivery_baseline_at
@@ -279,32 +271,31 @@ export async function scheduleDailyDigests(db: Db, now: Date): Promise<void> {
         SELECT
           c.channel_id,
           c.scheduled_for,
-          e.id AS email_id,
-          e.category,
-          e.summary,
+          m.id AS message_id,
+          m.category,
+          m.summary,
           row_number() OVER (
             PARTITION BY c.channel_id, c.scheduled_for
             ORDER BY
-              CASE e.category
+              CASE m.category
                 WHEN 'requires_action' THEN 1
                 WHEN 'important' THEN 2
                 WHEN 'noise' THEN 3
               END,
-              e.received_at DESC,
-              e.classified_at DESC,
-              e.id DESC
+              m.received_at DESC,
+              m.classified_at DESC,
+              m.id DESC
           ) AS position,
           count(*) OVER (
             PARTITION BY c.channel_id, c.scheduled_for
           ) AS total_count
         FROM candidates c
-        JOIN mailboxes m ON m.user_id = c.user_id
-        JOIN emails e ON e.mailbox_id = m.id
-        WHERE e.summary IS NOT NULL
-          AND e.category IS NOT NULL
-          AND e.classified_at > c.window_start
-          AND e.classified_at <= c.scheduled_for
-          AND e.received_at >= c.delivery_baseline_at
+        JOIN messages m ON m.user_id = c.user_id
+        WHERE m.summary IS NOT NULL
+          AND m.category IS NOT NULL
+          AND m.classified_at > c.window_start
+          AND m.classified_at <= c.scheduled_for
+          AND m.received_at >= c.delivery_baseline_at
       ),
       inserted_attempts AS (
         INSERT INTO delivery_attempts(
@@ -341,14 +332,14 @@ export async function scheduleDailyDigests(db: Db, now: Date): Promise<void> {
       inserted_items AS (
         INSERT INTO digest_items(
           delivery_attempt_id,
-          email_id,
+          message_id,
           position,
           category,
           summary
         )
         SELECT
           ia.id,
-          r.email_id,
+          r.message_id,
           r.position::smallint,
           r.category,
           r.summary

@@ -111,14 +111,20 @@ async function insertClassifiedEmail(
   classifiedAt: Date,
 ): Promise<void> {
   await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address, subject, body,
-      received_at, summary, category, classified_at
-    ) VALUES (
-      ${mailboxId}, ${providerUid}, false, 'Alice', 'alice@example.com',
-      'Action needed', 'Please reply.', ${classifiedAt},
-      'Reply before Friday.', 'requires_action', ${classifiedAt}
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body,
+        received_at, summary, category, classified_at
+      )
+      SELECT
+        user_id, ${providerUid}, 'Alice', 'alice@example.com', 'Action needed',
+        'Please reply.', ${classifiedAt}, 'Reply before Friday.',
+        'requires_action', ${classifiedAt}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
     )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, false FROM inserted
   `;
 }
 

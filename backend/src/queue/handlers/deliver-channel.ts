@@ -20,7 +20,7 @@ interface DeliveryAttemptRow {
   user_id: string;
   channel_id: string;
   kind: "immediate" | "digest" | "heartbeat";
-  email_id: string | null;
+  message_id: string | null;
   scheduled_for: Date | string | null;
   window_start: Date | string | null;
   window_end: Date | string | null;
@@ -128,7 +128,7 @@ async function loadAttempt(
       da.user_id,
       da.channel_id,
       da.kind,
-      da.email_id,
+      da.message_id,
       da.scheduled_for,
       da.window_start,
       da.window_end,
@@ -157,10 +157,9 @@ async function buildMessage(
 
   if (attempt.kind === "immediate") {
     const rows = await db.query`
-      SELECT e.category, e.summary
-      FROM emails e
-      JOIN mailboxes m ON m.id = e.mailbox_id
-      WHERE e.id = ${attempt.email_id} AND m.user_id = ${attempt.user_id}
+      SELECT m.category, m.summary
+      FROM messages m
+      WHERE m.id = ${attempt.message_id} AND m.user_id = ${attempt.user_id}
       LIMIT 1
     `;
     const row = rows[0];

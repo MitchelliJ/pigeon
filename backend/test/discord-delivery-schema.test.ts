@@ -47,16 +47,22 @@ async function insertEmail(
   providerUid: string,
 ): Promise<string> {
   const inserted = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address,
-      subject, body, received_at, summary, category, classified_at
-    ) VALUES (
-      ${mailboxId}, ${providerUid}, ${false}, ${"Alice"}, ${"alice@example.com"},
-      ${"Hello"}, ${"Body text"}, ${new Date("2026-01-01T00:00:00Z")},
-      ${"One sentence summary."}, ${"requires_action"},
-      ${new Date("2026-01-01T00:01:00Z")}
-    ) RETURNING id`;
-  return inserted[0]?.id as string;
+    WITH message AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body,
+        received_at, summary, category, classified_at
+      ) SELECT
+        user_id, ${providerUid}, 'Alice', 'alice@example.com', 'Hello',
+        'Body text', ${new Date("2026-01-01T00:00:00Z")},
+        'One sentence summary.', 'requires_action',
+        ${new Date("2026-01-01T00:01:00Z")}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
+    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, false FROM message
+    RETURNING message_id`;
+  return inserted[0]?.message_id as string;
 }
 
 async function insertChannel(
@@ -212,7 +218,7 @@ describe("migration 0009 — Discord delivery schema", () => {
       await expect(
         db.query`
           INSERT INTO delivery_attempts(
-            user_id, channel_id, kind, email_id, status
+            user_id, channel_id, kind, message_id, status
           ) VALUES (
             ${userId}, ${channelId}, ${"immediate"}, ${emailId}, ${"pending"}
           )`,
@@ -236,7 +242,7 @@ describe("migration 0009 — Discord delivery schema", () => {
       await expect(
         db.query`
           INSERT INTO delivery_attempts(
-            user_id, channel_id, kind, email_id, scheduled_for,
+            user_id, channel_id, kind, message_id, scheduled_for,
             window_start, window_end, status
           ) VALUES (
             ${userId}, ${channelId}, ${"digest"}, ${emailId},
@@ -248,7 +254,7 @@ describe("migration 0009 — Discord delivery schema", () => {
       await expect(
         db.query`
           INSERT INTO delivery_attempts(
-            user_id, channel_id, kind, email_id, status, omitted_count
+            user_id, channel_id, kind, message_id, status, omitted_count
           ) VALUES (
             ${userId}, ${channelId}, ${"immediate"}, ${emailId},
             ${"queued"}, ${0}
@@ -257,7 +263,7 @@ describe("migration 0009 — Discord delivery schema", () => {
       await expect(
         db.query`
           INSERT INTO delivery_attempts(
-            user_id, channel_id, kind, email_id, status, omitted_count
+            user_id, channel_id, kind, message_id, status, omitted_count
           ) VALUES (
             ${userId}, ${channelId}, ${"immediate"}, ${emailId},
             ${"failed"}, ${-1}
@@ -278,11 +284,11 @@ describe("migration 0009 — Discord delivery schema", () => {
       );
 
       await db.query`
-        INSERT INTO delivery_attempts(user_id, channel_id, kind, email_id, status)
+        INSERT INTO delivery_attempts(user_id, channel_id, kind, message_id, status)
         VALUES (${userId}, ${channelId}, ${"immediate"}, ${emailId}, ${"pending"})`;
       await expect(
         db.query`
-          INSERT INTO delivery_attempts(user_id, channel_id, kind, email_id, status)
+          INSERT INTO delivery_attempts(user_id, channel_id, kind, message_id, status)
           VALUES (${userId}, ${channelId}, ${"immediate"}, ${emailId}, ${"pending"})`,
       ).rejects.toThrow();
 
@@ -330,14 +336,14 @@ describe("migration 0009 — Discord delivery schema", () => {
 
       await db.query`
         INSERT INTO digest_items(
-          delivery_attempt_id, email_id, position, category, summary
+          delivery_attempt_id, message_id, position, category, summary
         ) VALUES (
           ${attemptId}, ${emailId}, ${1}, ${"requires_action"}, ${"Summary one."}
         )`;
       await expect(
         db.query`
           INSERT INTO digest_items(
-            delivery_attempt_id, email_id, position, category, summary
+            delivery_attempt_id, message_id, position, category, summary
           ) VALUES (
             ${attemptId}, ${secondEmailId}, ${0}, ${"important"}, ${"Summary two."}
           )`,
@@ -345,7 +351,7 @@ describe("migration 0009 — Discord delivery schema", () => {
       await expect(
         db.query`
           INSERT INTO digest_items(
-            delivery_attempt_id, email_id, position, category, summary
+            delivery_attempt_id, message_id, position, category, summary
           ) VALUES (
             ${attemptId}, ${secondEmailId}, ${26}, ${"important"}, ${"Summary two."}
           )`,
@@ -353,7 +359,7 @@ describe("migration 0009 — Discord delivery schema", () => {
       await expect(
         db.query`
           INSERT INTO digest_items(
-            delivery_attempt_id, email_id, position, category, summary
+            delivery_attempt_id, message_id, position, category, summary
           ) VALUES (
             ${attemptId}, ${secondEmailId}, ${1}, ${"important"}, ${"Summary two."}
           )`,
@@ -361,7 +367,7 @@ describe("migration 0009 — Discord delivery schema", () => {
       await expect(
         db.query`
           INSERT INTO digest_items(
-            delivery_attempt_id, email_id, position, category, summary
+            delivery_attempt_id, message_id, position, category, summary
           ) VALUES (
             ${attemptId}, ${emailId}, ${2}, ${"requires_action"}, ${"Summary one."}
           )`,

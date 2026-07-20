@@ -75,33 +75,63 @@ async function insertImmediateAttempt(
     )
     RETURNING id
   `;
-  const emailRows = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address, subject, body,
-      received_at
+  const messageRows = await db.query`
+    INSERT INTO messages(
+      user_id, identity_key, from_name, from_address, subject, body, received_at
     ) VALUES (
-      ${String(mailboxRows[0]?.id)}, ${suffix}, false, 'Sender',
-      'sender@example.com', 'Subject', 'Body', ${new Date("2026-01-11T09:00:00Z")}
+      ${owner.userId}, ${`test:${suffix}`}, 'Sender', 'sender@example.com',
+      'Subject', 'Body', ${new Date("2026-01-11T09:00:00Z")}
     )
     RETURNING id
   `;
+  const messageId = String(messageRows[0]?.id);
+  await db.query`
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    VALUES (${String(mailboxRows[0]?.id)}, ${messageId}, ${suffix}, false)
+  `;
   await db.query`
     INSERT INTO delivery_attempts(
-      user_id, channel_id, kind, email_id, status, sent_at
+      user_id, channel_id, kind, message_id, status, sent_at
     ) VALUES (
       ${owner.userId}, ${owner.channelId}, 'immediate',
-      ${String(emailRows[0]?.id)}, ${status}, ${sentAt}
+      ${messageId}, ${status}, ${sentAt}
     )
   `;
 }
 
 describe("scheduleQuietHeartbeats", () => {
+  it("schedules quiet heartbeats for Monday at 08:00 local regardless of digest settings", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const now = new Date("2026-01-12T09:00:00.000Z"); // Monday 10:00 in Amsterdam
+      await insertOwner(db, "heartbeat-fixed-slot", {
+        baselineAt: new Date("2025-12-01T00:00:00.000Z"),
+        digestTime: "17:45",
+        digestDays: [5],
+        timezone: "Europe/Amsterdam",
+      });
+
+      await scheduleQuietHeartbeats(db, now);
+
+      const attempts = await db.query`
+        SELECT scheduled_for
+        FROM delivery_attempts
+        WHERE kind = 'heartbeat'
+      `;
+      expect(attempts).toEqual([
+        { scheduled_for: new Date("2026-01-12T07:00:00.000Z") },
+      ]);
+    } finally {
+      await close();
+    }
+  });
+
   it("queues only the latest eligible UTC slot with the effective previous-slot baseline and deduplicates concurrent ticks", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
       const now = new Date("2026-01-12T10:30:00.000Z"); // Monday
-      const previousSlot = new Date("2026-01-09T08:00:00.000Z"); // Friday
       const scheduledFor = new Date("2026-01-12T08:00:00.000Z");
       const previousSlotOwner = await insertOwner(db, "heartbeat-previous", {
         baselineAt: new Date("2026-01-08T12:00:00.000Z"),
@@ -166,7 +196,7 @@ describe("scheduleQuietHeartbeats", () => {
             channel_id: previousSlotOwner.channelId,
             kind: "heartbeat",
             scheduled_for: scheduledFor,
-            window_start: previousSlot,
+            window_start: new Date("2026-01-08T12:00:00.000Z"),
             window_end: scheduledFor,
             status: "pending",
           },
@@ -195,7 +225,7 @@ describe("scheduleQuietHeartbeats", () => {
       await runMigrations(db);
       const now = new Date("2026-01-12T10:00:00.000Z");
       const baselineAt = new Date("2026-01-10T00:00:00.000Z");
-      const windowStart = new Date("2026-01-11T08:00:00.000Z");
+      const windowStart = new Date("2026-01-05T08:00:00.000Z");
       const suppressed = await insertOwner(db, "heartbeat-suppressed", {
         baselineAt,
       });

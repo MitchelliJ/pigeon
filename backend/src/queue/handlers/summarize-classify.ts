@@ -22,7 +22,7 @@ import type { LlmClassifier } from "../../llm/index";
 
 export async function handleSummarizeClassifyJob(
   db: Db,
-  payload: { emailId: string },
+  payload: { messageId: string },
   getClassifierFn: () => LlmClassifier,
 ): Promise<void> {
   const rows = await db.query`
@@ -31,17 +31,18 @@ export async function handleSummarizeClassifyJob(
       e.from_address AS from_address,
       e.subject AS subject,
       e.body AS body,
+      e.summary AS summary,
       u.classification_instructions AS classification_instructions
-    FROM emails e
-    JOIN mailboxes m ON m.id = e.mailbox_id
-    JOIN users u ON u.id = m.user_id
-    WHERE e.id = ${payload.emailId}`;
+    FROM messages e
+    JOIN users u ON u.id = e.user_id
+    WHERE e.id = ${payload.messageId}`;
   const row = rows[0] as
     | {
         from_name: string;
         from_address: string;
         subject: string;
         body: string;
+        summary: string | null;
         classification_instructions: string | null;
       }
     | undefined;
@@ -50,6 +51,10 @@ export async function handleSummarizeClassifyJob(
     // programming/data error, not a classifier-level failure — throw directly
     // instead of going through the { ok: false } path.
     throw new Error("email not found");
+  }
+
+  if (row.summary !== null) {
+    return;
   }
 
   const result = await getClassifierFn().classify({
@@ -64,9 +69,9 @@ export async function handleSummarizeClassifyJob(
   }
 
   await db.query`
-    UPDATE emails
+    UPDATE messages
     SET summary = ${result.result.summary},
         category = ${result.result.category},
         classified_at = now()
-    WHERE id = ${payload.emailId} AND summary IS NULL`;
+    WHERE id = ${payload.messageId} AND summary IS NULL`;
 }

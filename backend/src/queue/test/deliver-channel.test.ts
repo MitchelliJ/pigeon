@@ -116,18 +116,24 @@ async function insertEmail(
   category: Category,
   summary: string,
 ): Promise<string> {
+  const providerUid = `uid-${suffix}`;
   const rows = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address, subject, body,
-      received_at, summary, category, classified_at
-    ) VALUES (
-      ${mailboxId}, ${`uid-${suffix}`}, false, 'Sender',
-      'sender@example.com', 'Subject', 'Body', ${WINDOW_START}, ${summary},
-      ${category}, ${WINDOW_START}
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body,
+        received_at, summary, category, classified_at
+      )
+      SELECT
+        user_id, ${providerUid}, 'Sender', 'sender@example.com', 'Subject',
+        'Body', ${WINDOW_START}, ${summary}, ${category}, ${WINDOW_START}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
     )
-    RETURNING id
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, false FROM inserted
+    RETURNING message_id
   `;
-  return String(rows[0]?.id);
+  return String(rows[0]?.message_id);
 }
 
 async function insertImmediateAttempt(
@@ -150,7 +156,7 @@ async function insertImmediateAttempt(
   );
   const rows = await db.query`
     INSERT INTO delivery_attempts(
-      user_id, channel_id, kind, email_id, status, sent_at
+      user_id, channel_id, kind, message_id, status, sent_at
     ) VALUES (
       ${owner.userId}, ${owner.channelId}, 'immediate', ${emailId},
       ${options.status ?? "pending"},
@@ -215,7 +221,7 @@ async function insertDigestAttempt(
   const attemptId = String(attemptRows[0]?.id);
   await db.query`
     INSERT INTO digest_items(
-      delivery_attempt_id, email_id, position, category, summary
+      delivery_attempt_id, message_id, position, category, summary
     ) VALUES (
       ${attemptId}, ${emailId}, 1, 'important', 'Snapshotted digest summary.'
     )
@@ -356,7 +362,7 @@ describe("handleDeliverChannelJob", () => {
       );
       await db.query`
         INSERT INTO delivery_attempts(
-          user_id, channel_id, kind, email_id, status, sent_at
+          user_id, channel_id, kind, message_id, status, sent_at
         ) VALUES (
           ${owner.userId}, ${owner.channelId}, 'immediate', ${emailId}, 'sent',
           ${WINDOW_END}
@@ -396,7 +402,7 @@ describe("handleDeliverChannelJob", () => {
         "digest-retry",
       );
       await db.query`
-        UPDATE emails
+        UPDATE messages
         SET summary = 'Changed after scheduling.', category = 'noise'
         WHERE id = ${emailId}
       `;
@@ -426,7 +432,7 @@ describe("handleDeliverChannelJob", () => {
       `;
 
       await db.query`
-        UPDATE emails
+        UPDATE messages
         SET summary = 'Changed again before retry.', category = 'requires_action'
         WHERE id = ${emailId}
       `;

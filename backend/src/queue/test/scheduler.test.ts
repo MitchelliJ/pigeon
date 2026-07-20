@@ -63,18 +63,26 @@ async function insertEmail(
     receivedAt?: Date;
   },
 ): Promise<string> {
+  const providerUid = `uid-${Math.random().toString(36).slice(2)}`;
   const rows = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address,
-      subject, body, received_at, summary, category, classified_at
-    ) VALUES (
-      ${mailboxId}, ${`uid-${Math.random().toString(36).slice(2)}`}, ${false},
-      ${"Alice"}, ${"alice@example.com"}, ${"Hello"}, ${"Body text"},
-      ${overrides?.receivedAt ?? new Date("2026-01-01T00:00:00Z")},
-      ${overrides?.summary ?? null}, ${overrides?.category ?? null},
-      ${overrides?.classifiedAt ?? null}
-    ) RETURNING id`;
-  return String(rows[0]?.id);
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body,
+        received_at, summary, category, classified_at
+      )
+      SELECT
+        user_id, ${providerUid}, 'Alice', 'alice@example.com', 'Hello',
+        'Body text',
+        ${overrides?.receivedAt ?? new Date("2026-01-01T00:00:00Z")},
+        ${overrides?.summary ?? null}, ${overrides?.category ?? null},
+        ${overrides?.classifiedAt ?? null}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
+    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, false FROM inserted
+    RETURNING message_id`;
+  return String(rows[0]?.message_id);
 }
 
 async function insertChannel(
@@ -264,7 +272,7 @@ describe("scheduler", () => {
       await enqueueDueClassifyJobs(db);
 
       const rows = await db.query`
-        SELECT status, type FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+        SELECT status, type FROM jobs WHERE payload->>'messageId' = ${emailId}`;
       expect(rows).toEqual([{ status: "pending", type: "summarize_classify" }]);
     } finally {
       await close();
@@ -291,7 +299,7 @@ describe("scheduler", () => {
       await enqueueDueClassifyJobs(db);
 
       const rows = await db.query`
-        SELECT id FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+        SELECT id FROM jobs WHERE payload->>'messageId' = ${emailId}`;
       expect(rows.length).toBe(0);
     } finally {
       await close();
@@ -315,7 +323,7 @@ describe("scheduler", () => {
       await enqueueDueClassifyJobs(db);
 
       const rows = await db.query`
-        SELECT id FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+        SELECT id FROM jobs WHERE payload->>'messageId' = ${emailId}`;
       expect(rows.length).toBe(1);
     } finally {
       await close();
@@ -343,26 +351,26 @@ describe("scheduler", () => {
         INSERT INTO jobs (type, payload, status)
         VALUES (
           'summarize_classify',
-          jsonb_build_object('emailId', ${failedEmailId}::text),
+          jsonb_build_object('messageId', ${failedEmailId}::text),
           'failed'
         )`;
 
       await enqueueDueClassifyJobs(db);
 
       const rows = await db.query`
-        SELECT payload->>'emailId' AS email_id, status
+        SELECT payload->>'messageId' AS message_id, status
         FROM jobs
         WHERE type = 'summarize_classify'
-        ORDER BY email_id`;
-      type ClassifyJobRow = { email_id: string; status: string };
+        ORDER BY message_id`;
+      type ClassifyJobRow = { message_id: string; status: string };
       const orderedRows = [...(rows as ClassifyJobRow[])].sort(
         (left, right) =>
           left.status.localeCompare(right.status) ||
-          left.email_id.localeCompare(right.email_id),
+          left.message_id.localeCompare(right.message_id),
       );
       expect(orderedRows).toEqual([
-        { email_id: failedEmailId, status: "failed" },
-        { email_id: siblingEmailId, status: "pending" },
+        { message_id: failedEmailId, status: "failed" },
+        { message_id: siblingEmailId, status: "pending" },
       ]);
     } finally {
       await close();
@@ -484,26 +492,25 @@ describe("immediate delivery scheduler", () => {
 
       const attempts = await db.query`
         SELECT
-          da.email_id,
+          da.message_id,
           da.user_id AS attempt_user_id,
           da.channel_id,
           da.kind,
           da.status,
-          m.user_id AS email_user_id,
+          m.user_id AS message_user_id,
           c.user_id AS channel_user_id
         FROM delivery_attempts da
-        JOIN emails e ON e.id = da.email_id
-        JOIN mailboxes m ON m.id = e.mailbox_id
+        JOIN messages m ON m.id = da.message_id
         JOIN channels c ON c.id = da.channel_id
         WHERE da.kind = 'immediate'
-        ORDER BY da.email_id`;
+        ORDER BY da.message_id`;
       const jobs = await db.query`
-        SELECT da.email_id, j.type, j.status
+        SELECT da.message_id, j.type, j.status
         FROM jobs j
         LEFT JOIN delivery_attempts da
           ON da.id::text = j.payload->>'deliveryAttemptId'
         WHERE j.type = 'deliver_channel'
-        ORDER BY da.email_id`;
+        ORDER BY da.message_id`;
       const eligible = [
         {
           emailId: firstEmailId,
@@ -518,22 +525,22 @@ describe("immediate delivery scheduler", () => {
       ];
       const expectedAttempts = eligible
         .map(({ emailId, userId, channelId }) => ({
-          email_id: emailId,
+          message_id: emailId,
           attempt_user_id: userId,
           channel_id: channelId,
           kind: "immediate",
           status: "pending",
-          email_user_id: userId,
+          message_user_id: userId,
           channel_user_id: userId,
         }))
-        .sort((left, right) => left.email_id.localeCompare(right.email_id));
+        .sort((left, right) => left.message_id.localeCompare(right.message_id));
       const expectedJobs = eligible
         .map(({ emailId }) => ({
-          email_id: emailId,
+          message_id: emailId,
           type: "deliver_channel",
           status: "pending",
         }))
-        .sort((left, right) => left.email_id.localeCompare(right.email_id));
+        .sort((left, right) => left.message_id.localeCompare(right.message_id));
 
       expect({ attempts, jobs }).toEqual({
         attempts: expectedAttempts,

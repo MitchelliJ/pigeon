@@ -118,7 +118,7 @@ describe("handleSyncMailboxJob", () => {
       ).resolves.toBeUndefined();
 
       const rows = await db.query`
-        SELECT provider_uid FROM emails WHERE mailbox_id = ${mailboxId}`;
+        SELECT provider_uid FROM mailbox_messages WHERE mailbox_id = ${mailboxId}`;
       expect(rows.length).toBe(1);
       expect(rows[0]?.provider_uid).toBe("only-id");
     } finally {

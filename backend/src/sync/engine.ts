@@ -34,6 +34,7 @@
  * retry forever; later failures leave the existing watermark unchanged.
  */
 import type { Db } from "../db/index";
+import { messageIdentityKey } from "../messages/identity";
 import type { Vault } from "../vault/index";
 import type {
   FetchedMessage,
@@ -49,6 +50,7 @@ export type SyncResult =
 
 /** The subset of a `mailboxes` row `syncMailbox` needs to drive a connector. */
 interface MailboxRow {
+  user_id: string;
   host: string;
   port: number;
   tls: boolean;
@@ -121,7 +123,7 @@ export async function syncMailbox(
   connectTimeoutMs?: number,
 ): Promise<SyncResult> {
   const rows = await db.query`
-    SELECT host, port, tls, username, password_ciphertext, last_synced_at
+    SELECT user_id, host, port, tls, username, password_ciphertext, last_synced_at
     FROM mailboxes WHERE id = ${mailboxId}`;
   const row = rows[0] as MailboxRow | undefined;
   if (!row) {
@@ -158,7 +160,7 @@ export async function syncMailbox(
   }
 
   const existingRows = await db.query`
-    SELECT provider_uid FROM emails WHERE mailbox_id = ${mailboxId}`;
+    SELECT provider_uid FROM mailbox_messages WHERE mailbox_id = ${mailboxId}`;
   const existingIds = new Set(existingRows.map((r) => String(r.provider_uid)));
   const newIds = listResult.ids.filter((id) => !existingIds.has(id));
 
@@ -179,17 +181,34 @@ export async function syncMailbox(
     );
 
     for (const message of messages) {
-      const inserted = await db.query`
-        INSERT INTO emails (
-          mailbox_id, provider_uid, seen, from_name, from_address,
-          subject, body, received_at
-        ) VALUES (
-          ${mailboxId}, ${message.providerUid}, ${message.seen},
-          ${message.fromName}, ${message.fromAddress}, ${message.subject},
-          ${message.body}, ${message.receivedAt}
-        )
-        ON CONFLICT (mailbox_id, provider_uid) DO NOTHING
-        RETURNING id`;
+      const identityKey = messageIdentityKey(message);
+      const inserted = await db.withTx(async (tx) => {
+        await tx`
+          INSERT INTO messages (
+            user_id, identity_key, from_name, from_address, subject, body,
+            received_at
+          ) VALUES (
+            ${row.user_id}, ${identityKey}, ${message.fromName},
+            ${message.fromAddress}, ${message.subject}, ${message.body},
+            ${message.receivedAt}
+          )
+          ON CONFLICT (user_id, identity_key) DO NOTHING`;
+        const canonical = await tx`
+          SELECT id FROM messages
+          WHERE user_id = ${row.user_id} AND identity_key = ${identityKey}`;
+        const messageId = canonical[0]?.id;
+        if (messageId === undefined) {
+          throw new Error("canonical message resolution failed");
+        }
+        return tx`
+          INSERT INTO mailbox_messages (
+            mailbox_id, message_id, provider_uid, seen
+          ) VALUES (
+            ${mailboxId}, ${messageId}, ${message.providerUid}, ${message.seen}
+          )
+          ON CONFLICT DO NOTHING
+          RETURNING id`;
+      });
       insertedCount += inserted.length;
     }
   }

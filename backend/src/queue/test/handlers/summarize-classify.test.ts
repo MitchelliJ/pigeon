@@ -66,23 +66,29 @@ interface EmailOverrides {
   classifiedAt?: Date;
 }
 
-/** Insert a minimal valid emails row, optionally pre-classified. */
+/** Insert a canonical message and mailbox occurrence, optionally classified. */
 async function insertEmail(
   db: Db,
   mailboxId: string,
   overrides: EmailOverrides = {},
 ): Promise<string> {
   const rows = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address,
-      subject, body, received_at, summary, category, classified_at
-    ) VALUES (
-      ${mailboxId}, ${"uid-1"}, ${false}, ${"Alice"}, ${"alice@example.com"},
-      ${"Hello"}, ${"Body text"}, ${new Date("2026-01-01T00:00:00Z")},
-      ${overrides.summary ?? null}, ${overrides.category ?? null},
-      ${overrides.classifiedAt ?? null}
-    ) RETURNING id`;
-  return String(rows[0]?.id);
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body,
+        received_at, summary, category, classified_at
+      )
+      SELECT
+        user_id, 'uid-1', 'Alice', 'alice@example.com', 'Hello', 'Body text',
+        ${new Date("2026-01-01T00:00:00Z")}, ${overrides.summary ?? null},
+        ${overrides.category ?? null}, ${overrides.classifiedAt ?? null}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
+    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, 'uid-1', false FROM inserted
+    RETURNING message_id`;
+  return String(rows[0]?.message_id);
 }
 
 interface FakeClassifier extends LlmClassifier {
@@ -120,11 +126,11 @@ describe("handleSummarizeClassifyJob", () => {
         result: { summary: "A short summary", category: "important" },
       };
 
-      await handleSummarizeClassifyJob(db, { emailId }, () => fake);
+      await handleSummarizeClassifyJob(db, { messageId: emailId }, () => fake);
 
       const rows = await db.query`
         SELECT summary, category, classified_at
-        FROM emails WHERE id = ${emailId}`;
+        FROM messages WHERE id = ${emailId}`;
       expect(rows[0]?.summary).toBe("A short summary");
       expect(rows[0]?.category).toBe("important");
       expect(rows[0]?.classified_at).not.toBeNull();
@@ -151,7 +157,7 @@ describe("handleSummarizeClassifyJob", () => {
         result: { summary: "x", category: "noise" },
       };
 
-      await handleSummarizeClassifyJob(db, { emailId }, () => fake);
+      await handleSummarizeClassifyJob(db, { messageId: emailId }, () => fake);
 
       expect(fake.lastInput?.classificationInstructions).toBe(
         "newsletters are noise",
@@ -173,7 +179,7 @@ describe("handleSummarizeClassifyJob", () => {
       fake.result = { ok: false, reason: "boom" };
 
       await expect(
-        handleSummarizeClassifyJob(db, { emailId }, () => fake),
+        handleSummarizeClassifyJob(db, { messageId: emailId }, () => fake),
       ).rejects.toThrow("boom");
     } finally {
       await close();
@@ -198,10 +204,10 @@ describe("handleSummarizeClassifyJob", () => {
         result: { summary: "overwritten", category: "important" },
       };
 
-      await handleSummarizeClassifyJob(db, { emailId }, () => fake);
+      await handleSummarizeClassifyJob(db, { messageId: emailId }, () => fake);
 
       const rows = await db.query`
-        SELECT summary, category FROM emails WHERE id = ${emailId}`;
+        SELECT summary, category FROM messages WHERE id = ${emailId}`;
       expect(rows[0]?.summary).toBe("original summary");
       expect(rows[0]?.category).toBe("noise");
     } finally {

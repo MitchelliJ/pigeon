@@ -51,14 +51,20 @@ async function insertMailbox(
 
 async function insertEmail(db: Db, mailboxId: string): Promise<string> {
   const rows = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address,
-      subject, body, received_at
-    ) VALUES (
-      ${mailboxId}, ${"uid-1"}, ${false}, ${"Alice"}, ${"alice@example.com"},
-      ${"Hello"}, ${"Body text"}, ${new Date("2026-01-01T00:00:00Z")}
-    ) RETURNING id`;
-  return String(rows[0]?.id);
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body, received_at
+      )
+      SELECT
+        user_id, 'uid-1', 'Alice', 'alice@example.com', 'Hello', 'Body text',
+        ${new Date("2026-01-01T00:00:00Z")}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
+    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, 'uid-1', false FROM inserted
+    RETURNING message_id`;
+  return String(rows[0]?.message_id);
 }
 
 async function insertChannel(db: Db, userId: string): Promise<string> {
@@ -195,7 +201,7 @@ describe("queue store", () => {
       await enqueueClassifyJob(db, emailId);
 
       const rows = await db.query`
-        SELECT type, status FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+        SELECT type, status FROM jobs WHERE payload->>'messageId' = ${emailId}`;
       expect(rows).toEqual([{ type: "summarize_classify", status: "pending" }]);
     } finally {
       await close();
@@ -218,7 +224,7 @@ describe("queue store", () => {
       await enqueueClassifyJob(db, emailId);
 
       const rows = await db.query`
-        SELECT id FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+        SELECT id FROM jobs WHERE payload->>'messageId' = ${emailId}`;
       expect(rows.length).toBe(1);
     } finally {
       await close();
@@ -239,11 +245,11 @@ describe("queue store", () => {
 
       await enqueueClassifyJob(db, emailId);
       await db.query`
-        UPDATE jobs SET status = 'succeeded' WHERE payload->>'emailId' = ${emailId}`;
+        UPDATE jobs SET status = 'succeeded' WHERE payload->>'messageId' = ${emailId}`;
       await enqueueClassifyJob(db, emailId);
 
       const rows = await db.query`
-        SELECT status FROM jobs WHERE payload->>'emailId' = ${emailId} ORDER BY created_at`;
+        SELECT status FROM jobs WHERE payload->>'messageId' = ${emailId} ORDER BY created_at`;
       expect(rows.length).toBe(2);
       expect(rows[1]?.status).toBe("pending");
     } finally {

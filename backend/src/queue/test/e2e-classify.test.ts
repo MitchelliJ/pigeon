@@ -64,18 +64,23 @@ async function insertMailbox(
   return String(rows[0]?.id);
 }
 
-/** Insert a minimal valid emails row with `summary IS NULL`, returning its id. */
+/** Insert an unclassified canonical message and mailbox occurrence. */
 async function insertEmail(db: Db, mailboxId: string): Promise<string> {
   const rows = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address,
-      subject, body, received_at
-    ) VALUES (
-      ${mailboxId}, ${"uid-e2e"}, ${false}, ${"Alice"},
-      ${"alice@example.com"}, ${"Hello"}, ${"Body text"},
-      ${new Date("2026-01-01T00:00:00Z")}
-    ) RETURNING id`;
-  return String(rows[0]?.id);
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body, received_at
+      )
+      SELECT
+        user_id, 'uid-e2e', 'Alice', 'alice@example.com', 'Hello', 'Body text',
+        ${new Date("2026-01-01T00:00:00Z")}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
+    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, 'uid-e2e', false FROM inserted
+    RETURNING message_id`;
+  return String(rows[0]?.message_id);
 }
 
 /** A fake LlmClassifier resolving a fixed successful classification. */
@@ -112,13 +117,13 @@ describe("summarize + classify e2e wiring (FR-24)", () => {
 
       const emailRows = await db.query`
         SELECT summary, category, classified_at
-        FROM emails WHERE id = ${emailId}`;
+        FROM messages WHERE id = ${emailId}`;
       expect(emailRows[0]?.summary).toBe("A short summary");
       expect(emailRows[0]?.category).toBe("requires_action");
       expect(emailRows[0]?.classified_at).not.toBeNull();
 
       const jobRows = await db.query`
-        SELECT status FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+        SELECT status FROM jobs WHERE payload->>'messageId' = ${emailId}`;
       expect(jobRows[0]?.status).toBe("succeeded");
     } finally {
       await close();

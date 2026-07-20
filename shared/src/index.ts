@@ -34,7 +34,10 @@ export interface EmailAccount {
 /** A single triaged email with its AI summary. */
 export interface Email {
   id: string;
+  /** Deterministic primary occurrence, retained for source-account display. */
   accountId: string;
+  /** Every mailbox in which this canonical message occurs. */
+  accountIds: string[];
   fromName: string;
   fromAddress: string;
   subject: string;

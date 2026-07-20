@@ -46,7 +46,7 @@ export async function runWorkerTick(
       case "summarize_classify":
         return handleSummarizeClassifyJob(
           db,
-          job.payload as { emailId: string },
+          job.payload as { messageId: string },
           () => classifier,
         );
       case "deliver_channel":

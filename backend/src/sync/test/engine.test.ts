@@ -57,6 +57,24 @@ async function insertMailbox(
   return String(rows[0]?.id);
 }
 
+async function insertStoredMessage(
+  db: Db,
+  userId: string,
+  mailboxId: string,
+  providerUid: string,
+): Promise<void> {
+  const rows = await db.query`
+    INSERT INTO messages(
+      user_id, identity_key, from_name, from_address, subject, body, received_at
+    ) VALUES (
+      ${userId}, ${`test:${providerUid}`}, 'Old', 'old@example.com',
+      'Old subject', 'Old body', ${new Date("2026-06-01T00:00:00Z")}
+    ) RETURNING id`;
+  await db.query`
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    VALUES (${mailboxId}, ${rows[0]?.id}, ${providerUid}, false)`;
+}
+
 /** One recorded call to the fake connector's `listMessageIds`. */
 interface ListCall {
   opts?: { since?: Date };
@@ -154,8 +172,11 @@ describe("syncMailbox", () => {
 
       // both messages ingested with the right content.
       const emailRows = await db.query`
-        SELECT provider_uid, from_name, from_address, subject, body, seen
-        FROM emails WHERE mailbox_id = ${mailboxId} ORDER BY provider_uid`;
+        SELECT mm.provider_uid, m.from_name, m.from_address, m.subject, m.body,
+          mm.seen
+        FROM mailbox_messages mm
+        JOIN messages m ON m.id = mm.message_id
+        WHERE mm.mailbox_id = ${mailboxId} ORDER BY mm.provider_uid`;
       expect(emailRows).toEqual([
         {
           provider_uid: "a",
@@ -231,7 +252,7 @@ describe("syncMailbox", () => {
       await syncMailbox(db, vault, fake, mailboxId);
 
       const emailRows = await db.query`
-        SELECT provider_uid FROM emails WHERE mailbox_id = ${mailboxId}`;
+        SELECT provider_uid FROM mailbox_messages WHERE mailbox_id = ${mailboxId}`;
       const mailboxRows = await db.query`
         SELECT status, last_synced_at FROM mailboxes WHERE id = ${mailboxId}`;
 
@@ -285,7 +306,7 @@ describe("syncMailbox", () => {
       await syncMailbox(db, vault, fake, mailboxId);
 
       const emailRows = await db.query`
-        SELECT provider_uid FROM emails
+        SELECT provider_uid FROM mailbox_messages
         WHERE mailbox_id = ${mailboxId}
         ORDER BY provider_uid`;
       const mailboxRows = await db.query`
@@ -382,7 +403,7 @@ describe("syncMailbox", () => {
       await syncMailbox(db, vault, fake, mailboxId);
 
       const rows = await db.query`
-        SELECT provider_uid FROM emails
+        SELECT provider_uid FROM mailbox_messages
         WHERE mailbox_id = ${mailboxId}
         ORDER BY provider_uid`;
       expect(rows.map((row) => row.provider_uid)).toEqual(["after-watermark"]);
@@ -406,15 +427,7 @@ describe("syncMailbox", () => {
       await db.query`
         UPDATE mailboxes SET last_synced_at = now() - interval '1 hour'
         WHERE id = ${mailboxId}`;
-      await db.query`
-        INSERT INTO emails(
-          mailbox_id, provider_uid, seen, from_name, from_address,
-          subject, body, received_at
-        ) VALUES (
-          ${mailboxId}, ${"already-have"}, ${false}, ${"Old"},
-          ${"old@example.com"}, ${"Old subject"}, ${"Old body"},
-          ${new Date("2026-06-01T00:00:00Z")}
-        )`;
+      await insertStoredMessage(db, userId, mailboxId, "already-have");
 
       const fake = createFakeConnector();
       fake.listMessageIdsResult = {
@@ -462,15 +475,7 @@ describe("syncMailbox", () => {
       await db.query`
         UPDATE mailboxes SET last_synced_at = now() - interval '1 hour'
         WHERE id = ${mailboxId}`;
-      await db.query`
-        INSERT INTO emails(
-          mailbox_id, provider_uid, seen, from_name, from_address,
-          subject, body, received_at
-        ) VALUES (
-          ${mailboxId}, ${"existing"}, ${false}, ${"Old"},
-          ${"old@example.com"}, ${"Old subject"}, ${"Old body"},
-          ${new Date("2026-06-01T00:00:00Z")}
-        )`;
+      await insertStoredMessage(db, userId, mailboxId, "existing");
 
       const fake = createFakeConnector();
       fake.listMessageIdsResult = { ok: true, ids: ["existing"] };
@@ -479,7 +484,7 @@ describe("syncMailbox", () => {
       await syncMailbox(db, vault, fake, mailboxId);
 
       const rows = await db.query`
-        SELECT provider_uid FROM emails WHERE mailbox_id = ${mailboxId}`;
+        SELECT provider_uid FROM mailbox_messages WHERE mailbox_id = ${mailboxId}`;
       expect(rows.length).toBe(1);
     } finally {
       await close();
@@ -498,15 +503,7 @@ describe("syncMailbox", () => {
         userId,
         "backstop-mb@example.com",
       );
-      await db.query`
-        INSERT INTO emails(
-          mailbox_id, provider_uid, seen, from_name, from_address,
-          subject, body, received_at
-        ) VALUES (
-          ${mailboxId}, ${"dupe"}, ${false}, ${"Original"},
-          ${"original@example.com"}, ${"Original subject"},
-          ${"Original body"}, ${new Date("2026-06-01T00:00:00Z")}
-        )`;
+      await insertStoredMessage(db, userId, mailboxId, "dupe");
 
       const fake = createFakeConnector();
       fake.listMessageIdsResult = { ok: true, ids: ["dupe"] };
@@ -530,7 +527,7 @@ describe("syncMailbox", () => {
       await syncMailbox(db, vault, fake, mailboxId);
 
       const rows = await db.query`
-        SELECT provider_uid FROM emails
+        SELECT provider_uid FROM mailbox_messages
         WHERE mailbox_id = ${mailboxId} AND provider_uid = ${"dupe"}`;
       expect(rows.length).toBe(1);
     } finally {

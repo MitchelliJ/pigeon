@@ -103,18 +103,24 @@ async function insertClassifiedEmail(
   },
 ): Promise<SeededEmail> {
   const rows = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address, subject, body,
-      received_at, summary, category, classified_at
-    ) VALUES (
-      ${mailboxId}, ${input.summary}, false, 'Sender', 'sender@example.com',
-      'Subject', 'Body', ${input.receivedAt}, ${input.summary},
-      ${input.category}, ${input.classifiedAt}
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body,
+        received_at, summary, category, classified_at
+      )
+      SELECT
+        user_id, ${input.summary}, 'Sender', 'sender@example.com', 'Subject',
+        'Body', ${input.receivedAt}, ${input.summary}, ${input.category},
+        ${input.classifiedAt}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
     )
-    RETURNING id
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${input.summary}, false FROM inserted
+    RETURNING message_id
   `;
   return {
-    id: String(rows[0]?.id),
+    id: String(rows[0]?.message_id),
     category: input.category,
     summary: input.summary,
   };
@@ -354,7 +360,7 @@ describe("scheduleDailyDigests", () => {
 
       await scheduleDailyDigests(db, new Date("2026-01-14T08:05:00.000Z"));
       await db.query`
-        UPDATE emails
+        UPDATE messages
         SET summary = 'mutated after scheduling', category = 'noise'
         WHERE id = ${actionNew.id}
       `;
@@ -366,7 +372,7 @@ describe("scheduleDailyDigests", () => {
         WHERE user_id = ${owner.userId} AND kind = 'digest'
       `;
       const items = await db.query`
-        SELECT di.email_id, di.position, di.category, di.summary
+        SELECT di.message_id, di.position, di.category, di.summary
         FROM digest_items di
         JOIN delivery_attempts da ON da.id = di.delivery_attempt_id
         WHERE da.user_id = ${owner.userId}
@@ -404,7 +410,7 @@ describe("scheduleDailyDigests", () => {
           },
         ],
         items: selected.map((email, index) => ({
-          email_id: email.id,
+          message_id: email.id,
           position: index + 1,
           category: email.category,
           summary: email.summary,

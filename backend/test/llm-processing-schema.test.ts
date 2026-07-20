@@ -57,25 +57,31 @@ async function insertEmail(
   providerUid: string,
 ): Promise<string> {
   const inserted = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address,
-      subject, body, received_at
-    ) VALUES (
-      ${mailboxId}, ${providerUid}, ${false}, ${"Alice"}, ${"alice@example.com"},
-      ${"Hello"}, ${"Body text"}, ${new Date("2026-01-01T00:00:00Z")}
-    ) RETURNING id`;
-  return inserted[0]?.id as string;
+    WITH message AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body, received_at
+      )
+      SELECT
+        user_id, ${providerUid}, 'Alice', 'alice@example.com', 'Hello',
+        'Body text', ${new Date("2026-01-01T00:00:00Z")}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
+    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, false FROM message
+    RETURNING message_id`;
+  return inserted[0]?.message_id as string;
 }
 
 describe("migration 0007 — LLM processing schema", () => {
-  it("adds nullable summary/category/classified_at columns to emails", async () => {
+  it("provides nullable summary/category/classified_at columns on messages", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
       const rows = await db.query`
         SELECT column_name, data_type, is_nullable
         FROM information_schema.columns
-        WHERE table_name = 'emails'
+        WHERE table_name = 'messages'
         ORDER BY column_name`;
 
       const byName = new Map(
@@ -102,7 +108,7 @@ describe("migration 0007 — LLM processing schema", () => {
     }
   });
 
-  it("rejects an emails row with an invalid `category` value", async () => {
+  it("rejects a message with an invalid `category` value", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -115,13 +121,13 @@ describe("migration 0007 — LLM processing schema", () => {
 
       await expect(
         db.query`
-          INSERT INTO emails(
-            mailbox_id, provider_uid, seen, from_name, from_address,
-            subject, body, received_at, category
-          ) VALUES (
-            ${mailboxId}, ${"uid-bogus"}, ${false}, ${"Alice"}, ${"alice@example.com"},
-            ${"Hello"}, ${"Body"}, ${new Date("2026-01-01T00:00:00Z")}, ${"bogus"}
-          )`,
+          INSERT INTO messages(
+            user_id, identity_key, from_name, from_address, subject, body,
+            received_at, category
+          ) SELECT
+            user_id, 'uid-bogus', 'Alice', 'alice@example.com', 'Hello', 'Body',
+            ${new Date("2026-01-01T00:00:00Z")}, 'bogus'
+          FROM mailboxes WHERE id = ${mailboxId}`,
       ).rejects.toThrow();
     } finally {
       await close();
@@ -143,13 +149,13 @@ describe("migration 0007 — LLM processing schema", () => {
       for (const [i, category] of categories.entries()) {
         await expect(
           db.query`
-            INSERT INTO emails(
-              mailbox_id, provider_uid, seen, from_name, from_address,
-              subject, body, received_at, category
-            ) VALUES (
-              ${mailboxId}, ${`uid-${i}`}, ${false}, ${"Alice"}, ${"alice@example.com"},
-              ${"Hello"}, ${"Body"}, ${new Date("2026-01-01T00:00:00Z")}, ${category}
-            )`,
+            INSERT INTO messages(
+              user_id, identity_key, from_name, from_address, subject, body,
+              received_at, category
+            ) SELECT
+              user_id, ${`uid-${i}`}, 'Alice', 'alice@example.com', 'Hello',
+              'Body', ${new Date("2026-01-01T00:00:00Z")}, ${category}
+            FROM mailboxes WHERE id = ${mailboxId}`,
         ).resolves.toBeDefined();
       }
     } finally {
@@ -157,14 +163,14 @@ describe("migration 0007 — LLM processing schema", () => {
     }
   });
 
-  it("has the idx_emails_category_received_at index", async () => {
+  it("has the normalized category/received-at index", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
       const rows = await db.query`
-        SELECT indexname FROM pg_indexes WHERE tablename = 'emails'`;
+        SELECT indexname FROM pg_indexes WHERE tablename = 'messages'`;
       const indexNames = rows.map((r) => r.indexname as string);
-      expect(indexNames).toContain("idx_emails_category_received_at");
+      expect(indexNames).toContain("idx_messages_category_received_at");
     } finally {
       await close();
     }
@@ -194,12 +200,12 @@ describe("migration 0007 — LLM processing schema", () => {
         userId,
         "sctype-mb@example.com",
       );
-      const emailId = await insertEmail(db, mailboxId, "uid-sctype");
+      const messageId = await insertEmail(db, mailboxId, "uid-sctype");
 
       await expect(
         db.query`
           INSERT INTO jobs(type, payload)
-          VALUES (${"summarize_classify"}, ${{ emailId }})`,
+          VALUES (${"summarize_classify"}, ${{ messageId }})`,
       ).resolves.toBeDefined();
     } finally {
       await close();
@@ -219,7 +225,7 @@ describe("migration 0007 — LLM processing schema", () => {
     }
   });
 
-  it("blocks a second in-flight summarize_classify job for the same emailId, but allows one once the first has succeeded", async () => {
+  it("blocks a second in-flight summarize_classify job for the same messageId, but allows one once the first has succeeded", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -229,31 +235,31 @@ describe("migration 0007 — LLM processing schema", () => {
         userId,
         "scinflight-mb@example.com",
       );
-      const emailId = await insertEmail(db, mailboxId, "uid-scinflight");
+      const messageId = await insertEmail(db, mailboxId, "uid-scinflight");
 
       await db.query`
         INSERT INTO jobs(type, payload)
-        VALUES (${"summarize_classify"}, ${{ emailId }})`;
+        VALUES (${"summarize_classify"}, ${{ messageId }})`;
 
       await expect(
         db.query`
           INSERT INTO jobs(type, payload)
-          VALUES (${"summarize_classify"}, ${{ emailId }})`,
+          VALUES (${"summarize_classify"}, ${{ messageId }})`,
       ).rejects.toThrow();
 
       await db.query`
         UPDATE jobs SET status = ${"succeeded"}
-        WHERE payload->>'emailId' = ${emailId}`;
+        WHERE payload->>'messageId' = ${messageId}`;
 
       await expect(
         db.query`
           INSERT INTO jobs(type, payload)
-          VALUES (${"summarize_classify"}, ${{ emailId }})`,
+          VALUES (${"summarize_classify"}, ${{ messageId }})`,
       ).resolves.toBeDefined();
 
       const rows = await db.query`
         SELECT status FROM jobs
-        WHERE payload->>'emailId' = ${emailId}
+        WHERE payload->>'messageId' = ${messageId}
         ORDER BY created_at`;
       expect(rows).toEqual([{ status: "succeeded" }, { status: "pending" }]);
     } finally {

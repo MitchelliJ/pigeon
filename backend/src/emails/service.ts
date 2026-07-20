@@ -51,11 +51,10 @@ export async function loadCategoryCounts(
   userId: string,
 ): Promise<Record<Category, number>> {
   const rows = await db.query`
-    SELECT e.category, COUNT(*) AS count
-    FROM emails e
-    JOIN mailboxes m ON m.id = e.mailbox_id
-    WHERE m.user_id = ${userId} AND e.category IS NOT NULL
-    GROUP BY e.category
+    SELECT m.category, COUNT(*) AS count
+    FROM messages m
+    WHERE m.user_id = ${userId} AND m.category IS NOT NULL
+    GROUP BY m.category
   `;
 
   const counts: Record<Category, number> = { ...EMPTY_COUNTS };
@@ -105,9 +104,15 @@ function decodeCursor(cursor: string): CursorPosition {
 /** Shape a raw `emails` row (joined to its mailbox) into the shared `Email`. */
 function toEmail(row: Record<string, unknown>): Email {
   const category = row.category as Category;
+  const accountIds = (row.account_ids as unknown[]).map(String);
+  const accountId = accountIds[0];
+  if (accountId === undefined) {
+    throw new Error("message has no mailbox occurrence");
+  }
   return {
     id: String(row.id),
-    accountId: String(row.mailbox_id),
+    accountId,
+    accountIds,
     fromName: String(row.from_name),
     fromAddress: String(row.from_address),
     subject: String(row.subject),
@@ -140,27 +145,37 @@ export async function loadEmailPage(
 
   const rows = position
     ? await db.query`
-        SELECT e.id, e.mailbox_id, e.from_name, e.from_address, e.subject,
-               e.summary, e.body, e.category, e.received_at
-        FROM emails e
-        JOIN mailboxes m ON m.id = e.mailbox_id
+        SELECT m.id, occurrences.account_ids, m.from_name, m.from_address,
+               m.subject, m.summary, m.body, m.category, m.received_at
+        FROM messages m
+        CROSS JOIN LATERAL (
+          SELECT array_agg(mm.mailbox_id ORDER BY mb.created_at, mb.id) AS account_ids
+          FROM mailbox_messages mm
+          JOIN mailboxes mb ON mb.id = mm.mailbox_id
+          WHERE mm.message_id = m.id
+        ) occurrences
         WHERE m.user_id = ${userId}
-          AND e.category = ${category}
+          AND m.category = ${category}
           AND (
-            e.received_at < ${position.receivedAt}
-            OR (e.received_at = ${position.receivedAt} AND e.id < ${position.id})
+            m.received_at < ${position.receivedAt}
+            OR (m.received_at = ${position.receivedAt} AND m.id < ${position.id})
           )
-        ORDER BY e.received_at DESC, e.id DESC
+        ORDER BY m.received_at DESC, m.id DESC
         LIMIT ${limit + 1}
       `
     : await db.query`
-        SELECT e.id, e.mailbox_id, e.from_name, e.from_address, e.subject,
-               e.summary, e.body, e.category, e.received_at
-        FROM emails e
-        JOIN mailboxes m ON m.id = e.mailbox_id
+        SELECT m.id, occurrences.account_ids, m.from_name, m.from_address,
+               m.subject, m.summary, m.body, m.category, m.received_at
+        FROM messages m
+        CROSS JOIN LATERAL (
+          SELECT array_agg(mm.mailbox_id ORDER BY mb.created_at, mb.id) AS account_ids
+          FROM mailbox_messages mm
+          JOIN mailboxes mb ON mb.id = mm.mailbox_id
+          WHERE mm.message_id = m.id
+        ) occurrences
         WHERE m.user_id = ${userId}
-          AND e.category = ${category}
-        ORDER BY e.received_at DESC, e.id DESC
+          AND m.category = ${category}
+        ORDER BY m.received_at DESC, m.id DESC
         LIMIT ${limit + 1}
       `;
 

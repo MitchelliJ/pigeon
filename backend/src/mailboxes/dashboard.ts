@@ -71,7 +71,7 @@ async function loadUnreadCounts(
 
   const rows = await db.query`
     SELECT mailbox_id, COUNT(*) FILTER (WHERE seen = false) AS unread
-    FROM emails
+    FROM mailbox_messages
     WHERE mailbox_id = ANY(${mailboxIds}::uuid[])
     GROUP BY mailbox_id
   `;
@@ -184,10 +184,9 @@ async function loadOnboardingPhaseSignals(
       ) AS has_importing_mailbox,
       EXISTS (
         SELECT 1
-        FROM emails e
-        JOIN mailboxes m ON m.id = e.mailbox_id
+        FROM messages m
         WHERE m.user_id = ${userId}
-          AND e.summary IS NULL
+          AND m.summary IS NULL
       ) AS has_pending_summary
   `;
   const state = rows[0];

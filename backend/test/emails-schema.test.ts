@@ -1,176 +1,116 @@
-/*
- * Integration tests for migration 0005 (`0005_emails.sql`).
- *
- * Boots a real embedded Postgres cluster via `withTestDb`, runs all migrations
- * through `runMigrations`, then asserts the `emails` table exists with the
- * columns/constraints laid out in the Incremental Sync Engine & Watermarks
- * PRD §3.1 (all NOT NULL content columns, UNIQUE `(mailbox_id, provider_uid)`
- * as the dedupe mechanism, `mailbox_id` FK to `mailboxes(id)` with
- * `ON DELETE CASCADE`), plus the companion `mailboxes.last_synced_at` column.
- *
- * RED note: at authoring time migration 0005 does not exist on disk, so
- * `runMigrations` only applies 0001-0004. `to_regclass('public.emails')`
- * returns null, `mailboxes.last_synced_at` does not exist, and every
- * assertion below fails — that is the expected RED.
- */
-import { describe, it, expect } from "vitest";
+/* Integration coverage for the normalized message and mailbox occurrence schema. */
+import { describe, expect, it } from "vitest";
 import { withTestDb } from "./db";
 import { runMigrations } from "../src/migrate/runner";
 
-async function insertUser(
-  db: Awaited<ReturnType<typeof withTestDb>>["db"],
-  email: string,
-): Promise<string> {
-  const inserted =
-    await db.query`INSERT INTO users(email, name, password_hash) VALUES (${email}, ${"U"}, ${"h"}) RETURNING id`;
-  return inserted[0]?.id as string;
+type TestDbClient = Awaited<ReturnType<typeof withTestDb>>["db"];
+
+async function insertUser(db: TestDbClient, email: string): Promise<string> {
+  const rows =
+    await db.query`INSERT INTO users(email, name, password_hash) VALUES (${email}, 'U', 'h') RETURNING id`;
+  return String(rows[0]?.id);
 }
 
 async function insertMailbox(
-  db: Awaited<ReturnType<typeof withTestDb>>["db"],
+  db: TestDbClient,
   userId: string,
   address: string,
 ): Promise<string> {
-  const inserted = await db.query`
+  const rows = await db.query`
     INSERT INTO mailboxes(
       user_id, provider, protocol, label, address, host, port, tls,
       username, password_ciphertext
     ) VALUES (
-      ${userId}, ${"imap"}, ${"imap"}, ${"Work"}, ${address},
-      ${"imap.example.com"}, ${993}, ${true}, ${address},
-      ${"gcm:iv:tag:ct"}
+      ${userId}, 'imap', 'imap', 'Work', ${address}, 'imap.example.com', 993,
+      true, ${address}, 'ciphertext'
     ) RETURNING id`;
-  return inserted[0]?.id as string;
+  return String(rows[0]?.id);
 }
 
-describe("migration 0005 — emails schema", () => {
-  it("creates the emails table", async () => {
-    const { db, close } = await withTestDb();
-    try {
-      await runMigrations(db);
-      const rows = await db.query`SELECT to_regclass('public.emails') AS name`;
-      expect(rows[0]?.name).not.toBeNull();
-    } finally {
-      await close();
-    }
-  });
+async function insertMessageOccurrence(
+  db: TestDbClient,
+  userId: string,
+  mailboxId: string,
+  providerUid: string,
+  seen = false,
+): Promise<string> {
+  const rows = await db.query`
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body, received_at
+      ) VALUES (
+        ${userId}, ${providerUid}, 'Alice', 'alice@example.com', 'Hello',
+        'Body text', ${new Date("2026-01-01T00:00:00Z")}
+      ) RETURNING id
+    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, ${providerUid}, ${seen} FROM inserted
+    RETURNING message_id`;
+  return String(rows[0]?.message_id);
+}
 
-  it("has the expected columns with correct types/nullability", async () => {
+describe("normalized messages schema", () => {
+  it("creates canonical messages and mailbox occurrences with expected columns", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
+      const tables = await db.query`
+        SELECT to_regclass('public.messages') AS messages,
+               to_regclass('public.mailbox_messages') AS mailbox_messages`;
+      expect(tables[0]?.messages).not.toBeNull();
+      expect(tables[0]?.mailbox_messages).not.toBeNull();
+
       const rows = await db.query`
-        SELECT column_name, data_type, is_nullable
+        SELECT table_name, column_name, data_type, is_nullable
         FROM information_schema.columns
-        WHERE table_name = 'emails'
-        ORDER BY column_name`;
-
-      const byName = new Map(
-        rows.map((r) => [
-          r.column_name as string,
-          { data_type: r.data_type, is_nullable: r.is_nullable },
+        WHERE table_name IN ('messages', 'mailbox_messages')
+        ORDER BY table_name, column_name`;
+      const columns = new Map(
+        rows.map((row) => [
+          `${String(row.table_name)}.${String(row.column_name)}`,
+          { data_type: row.data_type, is_nullable: row.is_nullable },
         ]),
       );
-
-      expect(byName.get("id")).toEqual({
+      expect(columns.get("messages.user_id")).toEqual({
         data_type: "uuid",
         is_nullable: "NO",
       });
-      expect(byName.get("mailbox_id")).toEqual({
-        data_type: "uuid",
-        is_nullable: "NO",
-      });
-      expect(byName.get("provider_uid")).toEqual({
+      expect(columns.get("messages.identity_key")).toEqual({
         data_type: "text",
         is_nullable: "NO",
       });
-      expect(byName.get("seen")).toEqual({
+      expect(columns.get("mailbox_messages.message_id")).toEqual({
+        data_type: "uuid",
+        is_nullable: "NO",
+      });
+      expect(columns.get("mailbox_messages.seen")).toEqual({
         data_type: "boolean",
         is_nullable: "NO",
       });
-      expect(byName.get("from_name")).toEqual({
-        data_type: "text",
-        is_nullable: "NO",
-      });
-      expect(byName.get("from_address")).toEqual({
-        data_type: "text",
-        is_nullable: "NO",
-      });
-      expect(byName.get("subject")).toEqual({
-        data_type: "text",
-        is_nullable: "NO",
-      });
-      expect(byName.get("body")).toEqual({
-        data_type: "text",
-        is_nullable: "NO",
-      });
-      expect(byName.get("received_at")).toEqual({
-        data_type: "timestamp with time zone",
-        is_nullable: "NO",
-      });
-      expect(byName.get("created_at")).toEqual({
-        data_type: "timestamp with time zone",
-        is_nullable: "NO",
-      });
     } finally {
       await close();
     }
   });
 
-  it("has a UNIQUE constraint covering (mailbox_id, provider_uid)", async () => {
+  it("inserts and reads canonical content with mailbox-specific state", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
-      const rows = await db.query`
-        SELECT tc.constraint_name, kcu.column_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name = kcu.constraint_name
-         AND tc.table_schema = kcu.table_schema
-        WHERE tc.table_name = 'emails'
-          AND tc.constraint_type = 'UNIQUE'`;
-
-      const byConstraint = new Map<string, Set<string>>();
-      for (const r of rows) {
-        const name = r.constraint_name as string;
-        const col = r.column_name as string;
-        if (!byConstraint.has(name)) byConstraint.set(name, new Set());
-        byConstraint.get(name)?.add(col);
-      }
-
-      const matching = [...byConstraint.values()].some(
-        (cols) => cols.has("mailbox_id") && cols.has("provider_uid"),
-      );
-      expect(matching).toBe(true);
-    } finally {
-      await close();
-    }
-  });
-
-  it("inserts an emails row referencing a mailbox and reads it back", async () => {
-    const { db, close } = await withTestDb();
-    try {
-      await runMigrations(db);
-      const userId = await insertUser(db, "emailowner@example.com");
-      const mailboxId = await insertMailbox(
+      const userId = await insertUser(db, "owner@example.com");
+      const mailboxId = await insertMailbox(db, userId, "inbox@example.com");
+      const messageId = await insertMessageOccurrence(
         db,
         userId,
-        "emailowner-mb@example.com",
+        mailboxId,
+        "uid-1",
+        true,
       );
 
-      await db.query`
-        INSERT INTO emails(
-          mailbox_id, provider_uid, seen, from_name, from_address,
-          subject, body, received_at
-        ) VALUES (
-          ${mailboxId}, ${"uid-1"}, ${true}, ${"Alice"}, ${"alice@example.com"},
-          ${"Hello"}, ${"Body text"}, ${new Date("2026-01-01T00:00:00Z")}
-        )`;
-
       const rows = await db.query`
-        SELECT subject, from_address, body, seen, provider_uid
-        FROM emails WHERE mailbox_id = ${mailboxId}`;
-
+        SELECT m.subject, m.from_address, m.body, mm.seen, mm.provider_uid
+        FROM messages m
+        JOIN mailbox_messages mm ON mm.message_id = m.id
+        WHERE m.id = ${messageId}`;
       expect(rows).toEqual([
         {
           subject: "Hello",
@@ -185,76 +125,43 @@ describe("migration 0005 — emails schema", () => {
     }
   });
 
-  it("cascades delete from mailboxes to emails (ON DELETE CASCADE)", async () => {
+  it("enforces mailbox provider UID uniqueness and deletes orphan messages", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
-      const userId = await insertUser(db, "cascadeowner@example.com");
-      const mailboxId = await insertMailbox(
+      const userId = await insertUser(db, "constraints@example.com");
+      const mailboxId = await insertMailbox(db, userId, "box@example.com");
+      const messageId = await insertMessageOccurrence(
         db,
         userId,
-        "cascadeowner-mb@example.com",
+        mailboxId,
+        "uid-duplicate",
       );
-
-      await db.query`
-        INSERT INTO emails(
-          mailbox_id, provider_uid, seen, from_name, from_address,
-          subject, body, received_at
+      const secondRows = await db.query`
+        INSERT INTO messages(
+          user_id, identity_key, from_name, from_address, subject, body, received_at
         ) VALUES (
-          ${mailboxId}, ${"uid-cascade"}, ${false}, ${"Bob"}, ${"bob@example.com"},
-          ${"Subj"}, ${"Body"}, ${new Date("2026-01-01T00:00:00Z")}
-        )`;
-
-      await db.query`DELETE FROM mailboxes WHERE id = ${mailboxId}`;
-
-      const rows =
-        await db.query`SELECT * FROM emails WHERE mailbox_id = ${mailboxId}`;
-      expect(rows.length).toBe(0);
-    } finally {
-      await close();
-    }
-  });
-
-  it("UNIQUE (mailbox_id, provider_uid) rejects a duplicate provider_uid for the same mailbox", async () => {
-    const { db, close } = await withTestDb();
-    try {
-      await runMigrations(db);
-      const userId = await insertUser(db, "dupeowner@example.com");
-      const mailboxId = await insertMailbox(
-        db,
-        userId,
-        "dupeowner-mb@example.com",
-      );
-
-      await db.query`
-        INSERT INTO emails(
-          mailbox_id, provider_uid, seen, from_name, from_address,
-          subject, body, received_at
-        ) VALUES (
-          ${mailboxId}, ${"uid-dup"}, ${false}, ${"Carl"}, ${"carl@example.com"},
-          ${"Subj 1"}, ${"Body 1"}, ${new Date("2026-01-01T00:00:00Z")}
-        )`;
-
+          ${userId}, 'second', 'Bob', 'bob@example.com', 'Other', 'Body', now()
+        ) RETURNING id`;
       await expect(
         db.query`
-          INSERT INTO emails(
-            mailbox_id, provider_uid, seen, from_name, from_address,
-            subject, body, received_at
-          ) VALUES (
-            ${mailboxId}, ${"uid-dup"}, ${false}, ${"Carl 2"}, ${"carl2@example.com"},
-            ${"Subj 2"}, ${"Body 2"}, ${new Date("2026-01-02T00:00:00Z")}
-          )`,
+          INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid)
+          VALUES (${mailboxId}, ${String(secondRows[0]?.id)}, 'uid-duplicate')`,
       ).rejects.toThrow();
+
+      await db.query`DELETE FROM mailboxes WHERE id = ${mailboxId}`;
+      expect(
+        await db.query`SELECT id FROM messages WHERE id = ${messageId}`,
+      ).toHaveLength(0);
     } finally {
       await close();
     }
   });
 
-  it("mailboxes.last_synced_at is a nullable timestamptz, defaulting to NULL on insert", async () => {
+  it("keeps mailboxes.last_synced_at nullable and defaulting to NULL", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
-
       const columnRows = await db.query`
         SELECT data_type, is_nullable
         FROM information_schema.columns
@@ -262,17 +169,11 @@ describe("migration 0005 — emails schema", () => {
       expect(columnRows).toEqual([
         { data_type: "timestamp with time zone", is_nullable: "YES" },
       ]);
-
-      const userId = await insertUser(db, "syncedowner@example.com");
-      const mailboxId = await insertMailbox(
-        db,
-        userId,
-        "syncedowner-mb@example.com",
-      );
-
-      const rows =
-        await db.query`SELECT last_synced_at FROM mailboxes WHERE id = ${mailboxId}`;
-      expect(rows).toEqual([{ last_synced_at: null }]);
+      const userId = await insertUser(db, "sync@example.com");
+      const mailboxId = await insertMailbox(db, userId, "sync-box@example.com");
+      expect(
+        await db.query`SELECT last_synced_at FROM mailboxes WHERE id = ${mailboxId}`,
+      ).toEqual([{ last_synced_at: null }]);
     } finally {
       await close();
     }

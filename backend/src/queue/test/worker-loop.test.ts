@@ -60,19 +60,23 @@ async function insertMailbox(
   return String(rows[0]?.id);
 }
 
-/** Insert a minimal valid emails row with `summary IS NULL` (awaiting LLM
- *  processing), returning its id — mirrors `insertUser`/`insertMailbox`. */
+/** Insert an unclassified canonical message and mailbox occurrence. */
 async function insertEmail(db: Db, mailboxId: string): Promise<string> {
   const rows = await db.query`
-    INSERT INTO emails(
-      mailbox_id, provider_uid, seen, from_name, from_address,
-      subject, body, received_at
-    ) VALUES (
-      ${mailboxId}, ${"uid-classify"}, ${false}, ${"Alice"},
-      ${"alice@example.com"}, ${"Hello"}, ${"Body text"},
-      ${new Date("2026-01-01T00:00:00Z")}
-    ) RETURNING id`;
-  return String(rows[0]?.id);
+    WITH inserted AS (
+      INSERT INTO messages(
+        user_id, identity_key, from_name, from_address, subject, body, received_at
+      )
+      SELECT
+        user_id, 'uid-classify', 'Alice', 'alice@example.com', 'Hello',
+        'Body text', ${new Date("2026-01-01T00:00:00Z")}
+      FROM mailboxes WHERE id = ${mailboxId}
+      RETURNING id
+    )
+    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+    SELECT ${mailboxId}, id, 'uid-classify', false FROM inserted
+    RETURNING message_id`;
+  return String(rows[0]?.message_id);
 }
 
 interface FakeClassifier extends LlmClassifier {
@@ -173,9 +177,9 @@ describe("runWorkerTick", () => {
       }
 
       const emailsA = await db.query`
-        SELECT id FROM emails WHERE mailbox_id = ${mailboxA}`;
+        SELECT message_id FROM mailbox_messages WHERE mailbox_id = ${mailboxA}`;
       const emailsB = await db.query`
-        SELECT id FROM emails WHERE mailbox_id = ${mailboxB}`;
+        SELECT message_id FROM mailbox_messages WHERE mailbox_id = ${mailboxB}`;
       expect(emailsA.length).toBeGreaterThanOrEqual(1);
       expect(emailsB.length).toBeGreaterThanOrEqual(1);
     } finally {
@@ -279,12 +283,12 @@ describe("runWorkerTick", () => {
       await runWorkerTick(db, vault, 5, () => fake, fakeClassifier);
 
       const jobRows = await db.query`
-        SELECT status FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+        SELECT status FROM jobs WHERE payload->>'messageId' = ${emailId}`;
       expect(jobRows.length).toBe(1);
       expect(jobRows[0]?.status).toBe("succeeded");
 
       const emailRows = await db.query`
-        SELECT summary, category FROM emails WHERE id = ${emailId}`;
+        SELECT summary, category FROM messages WHERE id = ${emailId}`;
       expect(emailRows[0]?.summary).toBe("A short summary");
       expect(emailRows[0]?.category).toBe("important");
     } finally {
@@ -314,7 +318,7 @@ describe("runWorkerTick", () => {
       await runWorkerTick(db, vault, 5, () => fake, fakeClassifier);
 
       const rows = await db.query`
-        SELECT status, last_error FROM jobs WHERE payload->>'emailId' = ${emailId}`;
+        SELECT status, last_error FROM jobs WHERE payload->>'messageId' = ${emailId}`;
       expect(rows.length).toBe(1);
       expect(rows[0]?.status).toBe("pending");
       expect(rows[0]?.last_error).toContain("boom");
@@ -337,7 +341,7 @@ describe("runWorkerTick", () => {
       );
       const emailId = await insertEmail(db, mailboxId);
       await db.query`
-        UPDATE emails
+        UPDATE messages
         SET summary = 'Dispatch summary', category = 'requires_action',
             classified_at = now()
         WHERE id = ${emailId}
@@ -355,7 +359,7 @@ describe("runWorkerTick", () => {
       const channelId = String(channelRows[0]?.id);
       const attemptRows = await db.query`
         INSERT INTO delivery_attempts(
-          user_id, channel_id, kind, email_id, status
+          user_id, channel_id, kind, message_id, status
         ) VALUES (${userId}, ${channelId}, 'immediate', ${emailId}, 'pending')
         RETURNING id
       `;

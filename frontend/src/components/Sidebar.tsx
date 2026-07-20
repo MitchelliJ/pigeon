@@ -315,16 +315,9 @@ export default function Sidebar(props: {
                   Quiet mode
                 </h3>
                 <p class="digest-sub">
-                  New requires-action emails are sent immediately. During quiet
-                  stretches, Pigeon sends reassurance at{" "}
-                  {formatTime(props.digest.digestTime)} on your selected days.
+                  Receive your email digest only when emails requiring action
+                  are received.
                 </p>
-                <button
-                  class="digest-edit"
-                  onClick={() => setIsScheduleDialogOpen(true)}
-                >
-                  Edit reassurance schedule <ArrowUpRightIcon />
-                </button>
               </>
             }
           >
@@ -335,7 +328,7 @@ export default function Sidebar(props: {
               Daily digest at {formatTime(props.digest.digestTime)}
             </h3>
             <p class="digest-sub">
-              Only scheduled digests are sent. Last sent:{" "}
+              Last sent:{" "}
               {props.digest.lastSuccessfulDigestAt === null
                 ? "Never"
                 : formatDateTime(

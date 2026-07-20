@@ -148,6 +148,7 @@ async function parseFetchedMessage(
 
   return {
     providerUid,
+    ...(parsed.messageId ? { rfcMessageId: parsed.messageId } : {}),
     fromName: from?.name ?? "",
     fromAddress: from?.address ?? "",
     subject: parsed.subject ?? "",
