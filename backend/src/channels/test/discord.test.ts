@@ -147,6 +147,7 @@ describe("Discord channel connector", () => {
 
     await connector.send(config, {
       type: "digest",
+      username: "Sam",
       omittedCount: 3,
       items: Array.from({ length: 30 }, () => ({
         category: "important" as const,
@@ -164,11 +165,11 @@ describe("Discord channel connector", () => {
     };
     expect(body).toMatchObject({
       content: expect.stringContaining(
-        "+3 more email(s) are available in Pigeon.",
+        "This digest is capped to 30 emails, but there are 3 more available in Pigeon.",
       ),
       embeds: [
         expect.objectContaining({
-          title: expect.stringContaining("Pigeon daily digest"),
+          title: expect.stringContaining("Hi Sam, here is your email digest."),
           fields: expect.arrayContaining([
             expect.objectContaining({
               value: expect.not.stringContaining(longSummary),

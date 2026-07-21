@@ -2,8 +2,9 @@
 
 > Living reference for architecture, structure, style, testing, and workflow.
 > This is the authoritative source of truth for _how_ we build Pigeon. Keep it
-> current whenever a convention changes. Read alongside `vibes/spec-pigeon.md`
-> (what we're building) and `docs/COMMANDS.md` (how to run it).
+> current whenever a convention changes. Read alongside
+> `vibes/000-atomic/project-synopsis.md` (what we're building) and the root
+> `COMMANDS.md` (how to run it).
 
 ---
 
@@ -93,14 +94,33 @@ Only these three workspaces exist. New backend capability = a new folder under
 - **Two entry points, one codebase:** `server.ts` (HTTP) and `worker.ts`
   (queue + scheduler) import the same modules.
 
-### Where tests live
+### Testing architecture
 
-- Backend/shared: co-located `test/` folders — `backend/**/test/**/*.test.ts`.
-- **Integration-first:** route and job tests boot a real embedded Postgres and
-  exercise the actual SQL. External services (Mistral, Mollie, Discord, IMAP)
-  are faked behind their interfaces, not mocked ad hoc.
-- Frontend components are not unit-tested unless they carry real logic; the
-  Astro build (`pnpm build`) is the frontend's typecheck/smoke gate.
+- Backend/shared tests live in co-located `test/` folders. Frontend components
+  are not unit-tested unless they carry real logic; the Astro build
+  (`pnpm build`) is the frontend's typecheck/smoke gate.
+- **Two Vitest projects with an executable boundary** (`vitest.config.ts`):
+  - `unit` — files named `*.test.ts`. Pure logic; they must **never** boot a
+    database, container, server, or browser. Run in parallel, finish in
+    seconds, and are the phase gate (`pnpm test:unit`, inside `pnpm check`).
+  - `integration` — files named `*.integration.test.ts` (and end-to-end
+    `*.e2e.test.ts`). Each boots a **real embedded Postgres** and exercises the
+    actual SQL. External services (Mistral, Mollie, Discord, IMAP) are faked
+    behind their interfaces, not mocked ad hoc.
+- **New behavior defaults to a unit test.** Reach for an integration test only
+  when the behavior _is_ an external-adapter or infrastructure contract
+  (SQL/queries, migrations, constraints, transactions, network protocols).
+  Historically much of Pigeon is route/job code, so the integration suite is
+  large — that is the existing reality, not a licence to skip unit coverage for
+  new pure logic.
+- **Shared fixture:** integration tests boot Postgres through the single
+  `withTestDb()` helper in `backend/test/db.ts` — never hand-roll a cluster in a
+  test. The `integration` project runs in one fork
+  (`poolOptions.forks.singleFork`) because concurrent embedded clusters race
+  the postmaster/exit hooks on Windows; the `unit` project has no such limit.
+- **Naming is the classifier.** A file's suffix decides its project, so put a
+  test where its cost lives: if it touches `withTestDb`, it is
+  `*.integration.test.ts`.
 
 ### Authentication & authorization
 
@@ -137,8 +157,11 @@ Only these three workspaces exist. New backend capability = a new folder under
 - **Prettier owns formatting** (2-space indent, double quotes, semicolons,
   trailing commas, 80-col). Never hand-format; run `pnpm format`.
 - **ESLint owns correctness.** Fix warnings; unused vars prefixed `_` are
-  allowed. `pnpm check` (lint + typecheck) must pass before every commit and is
-  the `go` skill's phase gate after each parent task.
+  allowed. `pnpm check:static` (lint + typecheck) must pass before every
+  commit. The `go` skill's phase gate after each parent task is `pnpm check`
+  (static checks **plus** the fast unit project); the full pre-push / final
+  gate is `pnpm validate` (adds the integration/e2e suite and the frontend
+  build). See the root `COMMANDS.md`.
 
 ### TypeScript
 
@@ -201,6 +224,16 @@ Only these three workspaces exist. New backend capability = a new folder under
 
 ## 5. Changelog
 
+- **21-07-2026** — Split the Vitest suite into two projects with an executable
+  unit/integration boundary: `*.test.ts` (unit, infra-free, parallel) vs
+  `*.integration.test.ts` + `*.e2e.test.ts` (boot embedded Postgres, single
+  fork). New scripts `test:unit`/`test:integration`, `check:static`, and
+  `validate`; `pnpm check` is now static + unit (the phase gate) and
+  `pnpm validate` is the full gate (adds integration/e2e + frontend build).
+  Moved the spec and these guidelines to `vibes/000-atomic/` and made the root
+  `COMMANDS.md` the canonical command contract (`docs/COMMANDS.md` now points
+  to it). No behavior changed — the 40 Postgres-backed files were reclassified,
+  not rewritten.
 - **06-07-2026** — `.env` is now actually loaded at startup (`backend/src/env.ts`,
   hand-rolled, no `dotenv` dependency), wired into `server.ts`/`worker.ts`/
   `migrate/cli.ts`/`invite-cli.ts`'s entrypoints only — never anything a test

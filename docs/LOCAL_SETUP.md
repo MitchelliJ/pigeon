@@ -120,17 +120,19 @@ the `schema_migrations` table, each applied in its own transaction.
 ## Tests
 
 ```sh
-pnpm test          # vitest — integration suites boot a real embedded Postgres
-pnpm check:all     # lint + typecheck + tests (the full local gate before pushing)
-pnpm check         # lint + typecheck only (phase gate)
+pnpm test:unit        # fast unit project — no infrastructure, run it constantly
+pnpm test:integration # integration + e2e — each boots a real embedded Postgres
+pnpm check            # lint + typecheck + unit project (phase gate)
+pnpm validate         # check + integration/e2e + frontend build (full pre-push gate)
 ```
 
 No Docker / no service needed — the embedded Postgres harness in
-`backend/test/db.ts` starts a fresh, isolated cluster per test file
-(because it can, and because it keeps state clean). The Vitest config runs all
-test files in a single forked process sequentially (`poolOptions.forks.singleFork`)
-so clusters never start concurrently; this is deliberate — concurrent cluster
-boots flap on some hosts.
+`backend/test/db.ts` starts a fresh, isolated cluster per integration/e2e test
+file (because it can, and because it keeps state clean). The `integration`
+Vitest project runs its files in a single forked process sequentially
+(`poolOptions.forks.singleFork`) so clusters never start concurrently; this is
+deliberate — concurrent cluster boots flap on some hosts. The `unit` project
+never boots Postgres, so it stays parallel and fast.
 
 ## Containerized stack (optional, Docker)
 

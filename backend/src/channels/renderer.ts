@@ -46,12 +46,12 @@ function renderDigest(
   message: Extract<DeliveryMessage, { type: "digest" }>,
 ): RenderedDeliveryMessage {
   const rendered: RenderedDeliveryMessage = {
-    title: "Pigeon daily digest",
+    title: `Hi ${message.username}, here is your email digest.`,
     items: message.items.map(renderItem),
   };
 
   if (message.omittedCount !== undefined && message.omittedCount > 0) {
-    rendered.text = `+${message.omittedCount} more email(s) are available in Pigeon.`;
+    rendered.text = `This digest is capped to ${message.items.length} emails, but there are ${message.omittedCount} more available in Pigeon.`;
   }
 
   return rendered;

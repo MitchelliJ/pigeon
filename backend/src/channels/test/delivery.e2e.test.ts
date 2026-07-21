@@ -231,6 +231,7 @@ describe("quiet Discord delivery e2e", () => {
         deliveryPayloads: [
           {
             type: "digest",
+            username: "Quiet User",
             items: [action, important, noise],
             omittedCount: 0,
           },

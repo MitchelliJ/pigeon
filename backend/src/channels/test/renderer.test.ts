@@ -24,9 +24,10 @@ describe("channel message renderer", () => {
     expect(output).not.toMatch(/\b(subject|sender|mailbox|body)\b/i);
   });
 
-  it("renders the daily digest heading", () => {
+  it("renders the daily digest greeting", () => {
     const rendered = renderDeliveryMessage({
       type: "digest",
+      username: "Sam",
       items: [
         {
           category: "important",
@@ -35,7 +36,9 @@ describe("channel message renderer", () => {
       ],
     });
 
-    expect(JSON.stringify(rendered)).toContain("Pigeon daily digest");
+    expect(JSON.stringify(rendered)).toContain(
+      "Hi Sam, here is your email digest.",
+    );
   });
 
   it("renders empty digest copy", () => {
@@ -55,18 +58,22 @@ describe("channel message renderer", () => {
   it("renders digest overflow notice", () => {
     const rendered = renderDeliveryMessage({
       type: "digest",
-      items: [],
+      username: "Sam",
+      items: [
+        { category: "important", summary: "Budget note is ready for review." },
+      ],
       omittedCount: 3,
     });
 
     expect(JSON.stringify(rendered)).toContain(
-      "+3 more email(s) are available in Pigeon.",
+      "This digest is capped to 1 emails, but there are 3 more available in Pigeon.",
     );
   });
 
   it("renders stable category labels", () => {
     const rendered = renderDeliveryMessage({
       type: "digest",
+      username: "Sam",
       items: [
         { category: "requires_action", summary: "Reply to Sam." },
         { category: "important", summary: "Read the launch note." },

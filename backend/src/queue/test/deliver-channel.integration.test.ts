@@ -447,6 +447,7 @@ describe("handleDeliverChannelJob", () => {
         messages: [
           {
             type: "digest",
+            username: "Delivery User",
             items: [
               {
                 category: "requires_action",
@@ -541,6 +542,7 @@ describe("handleDeliverChannelJob", () => {
       `;
       const snapshotMessage = {
         type: "digest",
+        username: "Delivery User",
         items: [
           {
             category: "important",
@@ -627,6 +629,7 @@ describe("handleDeliverChannelJob", () => {
       `;
       const snapshotMessage = {
         type: "digest",
+        username: "Delivery User",
         items: [
           {
             category: "important",

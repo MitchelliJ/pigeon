@@ -19,6 +19,7 @@ export type DeliveryMessage =
   | { type: "heartbeat" }
   | {
       type: "digest";
+      username: string;
       items: DeliverySummaryItem[];
       omittedCount?: number;
     }

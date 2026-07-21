@@ -6,26 +6,16 @@ plus exactly one triage category.
 
 Classify the email into exactly one of these three categories:
 
-- `requires_action` — the user personally needs to do something. Examples: a
-  message that expects a reply, an event to RSVP to, a parcel to pick up, a bill
-  that must be paid manually, a form or document to sign.
+- `requires_action` — the user personally needs to do something.
 - `important` — no action is needed from the user, but they should know about it.
-  Examples: a delivery that is arriving, a charge that will hit their account on
-  a given date, an appointment reminder they have already accepted.
-- `noise` — general FYI with nothing to do and little to remember. Examples:
-  newsletters, "your parcel was handed to the carrier" updates, discount and
-  promotional emails, plain receipts, marketing digests.
-
-When in doubt between `requires_action` and `important`, ask: does the user have
-to lift a finger? If yes, it is `requires_action`. If they only need to be aware,
-it is `important`. If they would not care either way, it is `noise`.
+- `noise` — general FYI with nothing to do and little to remember.
 
 # Output format
 
 Return a single JSON object with exactly two fields and nothing else:
 
 - `summary` — one sentence, third person, describing what the email is about.
-  For example: "Pietje asks if you could review the invoice."
+  For example: '"Sender" informs you', '"Sender" asks you to", etc.*
 - `category` — one of the literal values `requires_action`, `important`, or
   `noise`.
 

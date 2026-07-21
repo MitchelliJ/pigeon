@@ -21,16 +21,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      # Tests boot their own embedded Postgres clusters — no service needed.
-      # `pnpm test` is ALSO where migrations run on CI: `backend/test/migrate.test.ts`
-      # and `backend/test/migrate-cli.test.ts` exercise `runMigrations` and the
-      # `pnpm migrate` CLI's `main()` against a real embedded engine (the same
-      # `db/migrations/*.sql` files prod applies). No standalone `migrate` step
-      # or postgres service is added — it would duplicate the harness without
-      # adding coverage. (The compose migrate-then-serve flow itself is verified
-      # locally via `docker compose up --build`; CI's `image` job below builds
-      # that same image.)
-      - run: pnpm test
+      # Fast unit project first (no infrastructure), then the integration
+      # project. Integration/e2e tests boot their own embedded Postgres
+      # clusters — no service needed. The integration project is ALSO where
+      # migrations run on CI: `backend/test/migrate.integration.test.ts` and
+      # `backend/test/migrate-cli.integration.test.ts` exercise `runMigrations`
+      # and the `pnpm migrate` CLI's `main()` against a real embedded engine
+      # (the same `db/migrations/*.sql` files prod applies). No standalone
+      # `migrate` step or postgres service is added — it would duplicate the
+      # harness without adding coverage. (The compose migrate-then-serve flow
+      # itself is verified locally via `docker compose up --build`; CI's
+      # `image` job below builds that same image.)
+      - run: pnpm test:unit
+      - run: pnpm test:integration
       - run: pnpm build
 
   image:

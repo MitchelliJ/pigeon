@@ -1,4 +1,4 @@
-# Project Specification — 🕊️ Pigeon
+# Project Synopsis — 🕊️ Pigeon
 
 > Connect your inboxes. Get one calm, ranked digest — and an instant nudge only
 > when something actually needs you.

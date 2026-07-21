@@ -8,7 +8,8 @@ for local development see `LOCAL_SETUP.md`.
 
 - **Hetzner Cloud, EU region** (e.g. `hel1` / `fsn1` / `nbg1`). Choose a CX
   instance (start at CX22; size up if the worker or sync load grows). EU
-  hosting is a hard constraint (GDPR by default — see `vibes/spec-pigeon.md`).
+  hosting is a hard constraint (GDPR by default — see
+  `vibes/000-atomic/project-synopsis.md`).
 - **OS:** Ubuntu Server LTS. Install Docker Engine + the `docker compose`
   plugin (don't use Docker Desktop; that's a dev tool).
 

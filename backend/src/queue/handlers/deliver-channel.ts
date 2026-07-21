@@ -26,6 +26,7 @@ interface DeliveryAttemptRow {
   window_end: Date | string | null;
   status: "pending" | "sent" | "failed";
   omitted_count: number;
+  user_name: string;
   channel_kind: string;
   channel_status: "active" | "error";
   config_encrypted: string;
@@ -134,6 +135,7 @@ async function loadAttempt(
       da.window_end,
       da.status,
       da.omitted_count,
+      u.name AS user_name,
       c.kind AS channel_kind,
       c.status AS channel_status,
       c.config_encrypted
@@ -141,6 +143,8 @@ async function loadAttempt(
     JOIN channels c
       ON c.id = da.channel_id
      AND c.user_id = da.user_id
+    JOIN users u
+      ON u.id = da.user_id
     WHERE da.id = ${deliveryAttemptId}
     LIMIT 1
   `;
@@ -200,6 +204,7 @@ async function buildMessage(
 
   return {
     type: "digest",
+    username: attempt.user_name,
     items,
     omittedCount: attempt.omitted_count,
   };

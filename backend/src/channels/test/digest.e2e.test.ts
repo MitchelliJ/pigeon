@@ -281,11 +281,14 @@ describe("daily Discord digest e2e", () => {
           payloads: [
             {
               type: "digest",
+              username: "Digest User",
               items: firstExpectedItems,
               omittedCount: 5,
             },
           ],
-          overflowText: ["+5 more email(s) are available in Pigeon."],
+          overflowText: [
+            "This digest is capped to 25 emails, but there are 5 more available in Pigeon.",
+          ],
           attempts: [
             {
               kind: "digest",
@@ -307,6 +310,7 @@ describe("daily Discord digest e2e", () => {
           payloads: [
             {
               type: "digest",
+              username: "Digest User",
               items: [{ category: "important", summary: "later-new-email" }],
               omittedCount: 0,
             },
