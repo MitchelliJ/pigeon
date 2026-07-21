@@ -391,6 +391,179 @@ describe("handleDeliverChannelJob", () => {
     }
   });
 
+  it("sends quiet-triggered digest snapshot", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const owner = await insertOwner(db, vault, "quiet-triggered-delivery");
+      await db.query`
+        UPDATE delivery_settings
+        SET mode = 'quiet'
+        WHERE user_id = ${owner.userId}
+      `;
+      const triggerMessageId = await insertEmail(
+        db,
+        owner.mailboxId,
+        "quiet-triggered-delivery",
+        "requires_action",
+        "Mutable trigger summary.",
+      );
+      const attemptRows = await db.query`
+        INSERT INTO delivery_attempts(
+          user_id, channel_id, kind, message_id, scheduled_for, window_start,
+          window_end, status, omitted_count
+        ) VALUES (
+          ${owner.userId}, ${owner.channelId}, 'digest', ${triggerMessageId},
+          ${WINDOW_END}, ${WINDOW_START}, ${WINDOW_END}, 'pending', 1
+        )
+        RETURNING id
+      `;
+      const attemptId = String(attemptRows[0]?.id);
+      await db.query`
+        INSERT INTO digest_items(
+          delivery_attempt_id, message_id, position, category, summary
+        ) VALUES (
+          ${attemptId}, ${triggerMessageId}, 1, 'requires_action',
+          'Snapshotted quiet digest summary.'
+        )
+      `;
+      const connector = createFakeConnector({ ok: true });
+
+      await handleDeliverChannelJob(
+        db,
+        vault,
+        { deliveryAttemptId: attemptId },
+        createFakeRegistry(connector),
+      );
+      const rows = await db.query`
+        SELECT da.status, ds.last_digest_cutoff_at
+        FROM delivery_attempts da
+        JOIN delivery_settings ds ON ds.user_id = da.user_id
+        WHERE da.id = ${attemptId}
+      `;
+
+      expect({ messages: connector.messages, attempt: rows[0] }).toEqual({
+        messages: [
+          {
+            type: "digest",
+            items: [
+              {
+                category: "requires_action",
+                summary: "Snapshotted quiet digest summary.",
+              },
+            ],
+            omittedCount: 1,
+          },
+        ],
+        attempt: {
+          status: "sent",
+          last_digest_cutoff_at: WINDOW_END,
+        },
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("retries quiet-triggered digest from the same snapshot", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const owner = await insertOwner(db, vault, "quiet-triggered-retry");
+      await db.query`
+        UPDATE delivery_settings
+        SET mode = 'quiet'
+        WHERE user_id = ${owner.userId}
+      `;
+      const triggerMessageId = await insertEmail(
+        db,
+        owner.mailboxId,
+        "quiet-triggered-retry",
+        "requires_action",
+        "Mutable trigger summary.",
+      );
+      const attemptRows = await db.query`
+        INSERT INTO delivery_attempts(
+          user_id, channel_id, kind, message_id, scheduled_for, window_start,
+          window_end, status, omitted_count
+        ) VALUES (
+          ${owner.userId}, ${owner.channelId}, 'digest', ${triggerMessageId},
+          ${WINDOW_END}, ${WINDOW_START}, ${WINDOW_END}, 'pending', 1
+        )
+        RETURNING id
+      `;
+      const attemptId = String(attemptRows[0]?.id);
+      await db.query`
+        INSERT INTO digest_items(
+          delivery_attempt_id, message_id, position, category, summary
+        ) VALUES (
+          ${attemptId}, ${triggerMessageId}, 1, 'important',
+          'Original quiet digest snapshot.'
+        )
+      `;
+      const connector = createFakeConnector(
+        { ok: false, retryable: true, reason: "Discord request failed" },
+        { ok: true },
+      );
+      const registry = createFakeRegistry(connector);
+
+      await expect(
+        handleDeliverChannelJob(
+          db,
+          vault,
+          { deliveryAttemptId: attemptId },
+          registry,
+        ),
+      ).rejects.toThrow("Discord request failed");
+      const afterFailure = await db.query`
+        SELECT last_digest_cutoff_at
+        FROM delivery_settings
+        WHERE user_id = ${owner.userId}
+      `;
+
+      await db.query`
+        UPDATE messages
+        SET summary = 'Changed before retry.', category = 'noise'
+        WHERE id = ${triggerMessageId}
+      `;
+      await handleDeliverChannelJob(
+        db,
+        vault,
+        { deliveryAttemptId: attemptId },
+        registry,
+      );
+      const afterSuccess = await db.query`
+        SELECT last_digest_cutoff_at
+        FROM delivery_settings
+        WHERE user_id = ${owner.userId}
+      `;
+      const snapshotMessage = {
+        type: "digest",
+        items: [
+          {
+            category: "important",
+            summary: "Original quiet digest snapshot.",
+          },
+        ],
+        omittedCount: 1,
+      };
+
+      expect({
+        messages: connector.messages,
+        cutoffAfterFailure: afterFailure[0]?.last_digest_cutoff_at,
+        cutoffAfterSuccess: afterSuccess[0]?.last_digest_cutoff_at,
+      }).toEqual({
+        messages: [snapshotMessage, snapshotMessage],
+        cutoffAfterFailure: WINDOW_START,
+        cutoffAfterSuccess: WINDOW_END,
+      });
+    } finally {
+      await close();
+    }
+  });
+
   it("retries a digest from the same snapshot and advances its cutoff only after success", async () => {
     const { db, close } = await withTestDb();
     try {

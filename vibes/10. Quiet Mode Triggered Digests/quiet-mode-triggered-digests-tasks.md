@@ -1,0 +1,122 @@
+# Relevant Files
+
+- `vibes/10. Quiet Mode Triggered Digests/prd-quiet-mode-triggered-digests.md` - Source requirements for this change.
+- `vibes/spec-pigeon.md` - Product spec copy that currently describes quiet mode differently from the new triggered-digest behavior.
+- `db/migrations/0013_quiet_triggered_digests.sql` - Forward-only migration for quiet-triggered digest attempt shape, idempotency index, and obsolete pending immediate attempts.
+- `backend/test/discord-delivery-schema.test.ts` - Embedded-Postgres schema coverage for delivery attempt constraints, uniqueness, and migration effects.
+- `backend/src/queue/scheduler.ts` - Replaces per-message quiet immediate scheduling with quiet-triggered digest snapshot scheduling; also updates heartbeat activity checks.
+- `backend/src/queue/test/scheduler.test.ts` - Existing scheduler coverage that currently expects one quiet attempt per action message.
+- `backend/src/queue/test/digest-scheduler.test.ts` - Daily digest scheduler coverage that should remain green while shared digest snapshot logic is reused.
+- `backend/src/queue/test/heartbeat-scheduler.test.ts` - Quiet heartbeat coverage that must treat successful quiet-triggered digests as recent user-facing activity.
+- `backend/src/queue/handlers/deliver-channel.ts` - Delivery handler that must send quiet-triggered work through the existing digest snapshot path and avoid new immediate payloads.
+- `backend/src/queue/test/deliver-channel.test.ts` - Delivery handler coverage for digest snapshots, retries, cutoff advancement, and legacy immediate no-op/safety behavior.
+- `backend/src/worker.ts` - Scheduler loop wiring that should call quiet-triggered digest scheduling instead of immediate delivery scheduling.
+- `backend/src/queue/test/worker-loop.test.ts` - Worker dispatch regression coverage for delivery jobs if handler contracts change.
+- `backend/src/channels/test/delivery-e2e.test.ts` - End-to-end quiet-mode Discord delivery coverage; should assert one digest payload with all categories.
+- `backend/src/channels/test/digest-e2e.test.ts` - End-to-end daily digest regression coverage; should remain unchanged except for shared helper updates.
+- `backend/src/channels/test/invalid-webhook-e2e.test.ts` - Invalid webhook scheduling regression coverage using the new quiet-triggered scheduler.
+- `backend/src/messages/test/normalized-messages.test.ts` - Canonical-message regression coverage that currently expects quiet immediate attempts.
+- `backend/src/channels/types.ts` - Provider-neutral delivery message types; new quiet work must use `type: "digest"`, not `type: "immediate"`.
+- `backend/src/channels/renderer.ts` - Existing digest renderer that quiet mode should reuse without mode-specific presentation changes.
+- `backend/src/channels/test/renderer.test.ts` - Renderer regression tests; update only if active quiet-mode copy/expectations mention immediate delivery.
+- `backend/src/channels/service.ts` - Delivery-settings mode-change cleanup; verify pending quiet-triggered digest attempts are failed on mode changes.
+- `frontend/src/components/Sidebar.tsx` - User-facing delivery-mode copy that currently may describe quiet mode as per-email/no-digest.
+- `frontend/src/components/EditScheduleDialog.tsx` - Schedule UI copy if it implies quiet mode does not use digest windows.
+- `frontend/src/lib/api.ts` - Included for typecheck fallout if delivery settings copy/types are touched.
+
+# Tasks
+
+- [x] 1.0 Update delivery schema for quiet-triggered digest attempts
+  - [x] 1.1 RED (integration): Write one focused failing test in `backend/test/discord-delivery-schema.test.ts` proving a `delivery_attempts` row with `kind = 'digest'`, a non-null `message_id`, `scheduled_for`, `window_start`, and `window_end` is valid. This requires the embedded Postgres fixture because the behavior is enforced by SQL constraints.
+  - [x] 1.2 CONFIRM RED: Run only the selected schema test — `pnpm vitest backend/test/discord-delivery-schema.test.ts -t "quiet-triggered digest attempt"` — and verify it fails because the current `delivery_attempts_shape_check` rejects digest attempts with `message_id`.
+  - [x] 1.3 GREEN: Add `db/migrations/0013_quiet_triggered_digests.sql` that relaxes the digest shape so digest attempts may carry a trigger `message_id` while still requiring `scheduled_for`, `window_start`, `window_end`, and `window_start < window_end`. Keep daily digest attempts valid with `message_id IS NULL`, and keep legacy immediate attempt shape unchanged.
+  - [x] 1.4 CONFIRM GREEN: Run only the selected schema test — `pnpm vitest backend/test/discord-delivery-schema.test.ts -t "quiet-triggered digest attempt"` — and verify it passes.
+  - [x] 1.5 RED (integration): Write one focused failing schema test proving duplicate quiet-triggered digest attempts for the same `(channel_id, message_id)` are rejected while daily scheduled digest uniqueness by `(channel_id, scheduled_for)` still works.
+  - [x] 1.6 CONFIRM RED: Run only that schema test — `pnpm vitest backend/test/discord-delivery-schema.test.ts -t "prevents duplicate quiet-triggered digest attempts"` — and verify it fails because no quiet-trigger idempotency index exists.
+  - [x] 1.7 GREEN: Extend the migration with a partial unique index such as `idx_delivery_attempts_quiet_digest_trigger_unique` on `(channel_id, message_id)` where `kind = 'digest' AND message_id IS NOT NULL`.
+  - [x] 1.8 CONFIRM GREEN: Run only that schema test — `pnpm vitest backend/test/discord-delivery-schema.test.ts -t "prevents duplicate quiet-triggered digest attempts"` — and verify it passes.
+  - [x] 1.9 RED (integration): Write one focused migration/schema test proving pending legacy `kind = 'immediate'` attempts do not remain pending after all migrations run. Sent/failed historical immediate attempts may remain as history.
+  - [x] 1.10 CONFIRM RED: Run only that schema test — `pnpm vitest backend/test/discord-delivery-schema.test.ts -t "fails pending legacy immediate attempts"` — and verify it fails because pending immediate attempts currently remain pending.
+  - [x] 1.11 GREEN: Extend the migration to mark pending legacy immediate attempts failed with a sanitized reason such as `Immediate quiet delivery superseded by digest delivery`. Do not delete history rows.
+  - [x] 1.12 CONFIRM GREEN: Run only that schema test — `pnpm vitest backend/test/discord-delivery-schema.test.ts -t "fails pending legacy immediate attempts"` — and verify it passes.
+  - [x] 1.13 REFACTOR: Review the migration comments and index names for clarity; if anything changes, rerun `pnpm vitest backend/test/discord-delivery-schema.test.ts`.
+  - [x] 1.14 CHECK PHASE: Run `pnpm check` and `pnpm vitest backend/test/discord-delivery-schema.test.ts`.
+
+- [x] 2.0 Replace quiet immediate scheduling with quiet-triggered digest snapshots
+  - [x] 2.1 RED (integration): Write one focused failing scheduler test proving a quiet-mode user with one `requires_action`, one `important`, and one `noise` canonical message in the open window gets one pending `kind = 'digest'` attempt, three `digest_items`, one `deliver_channel` job, and no `kind = 'immediate'` attempt. This requires embedded Postgres because the behavior is SQL selection, snapshotting, and queue insertion.
+  - [x] 2.2 CONFIRM RED: Run only the selected scheduler test — `pnpm vitest backend/src/queue/test/scheduler.test.ts -t "quiet-triggered digest snapshots all categories"` — and verify it fails because current quiet scheduling creates an immediate attempt and no digest snapshot.
+  - [x] 2.3 GREEN: In `backend/src/queue/scheduler.ts`, replace active quiet delivery behavior with `scheduleQuietTriggeredDigests(db, now)`. The scheduler must compute `window_start = COALESCE(last_digest_cutoff_at, delivery_baseline_at)`, choose a deterministic trigger action message from the open window, create one `kind = 'digest'` attempt with that trigger `message_id`, snapshot ranked/capped `digest_items`, set `omitted_count`, and enqueue one `deliver_channel` job in the same transaction.
+  - [x] 2.4 CONFIRM GREEN: Run only the selected scheduler test — `pnpm vitest backend/src/queue/test/scheduler.test.ts -t "quiet-triggered digest snapshots all categories"` — and verify it passes.
+  - [x] 2.5 RED (integration): Write one focused failing scheduler test proving important/noise messages alone do not trigger quiet-mode delivery.
+  - [x] 2.6 CONFIRM RED: Run only that test — `pnpm vitest backend/src/queue/test/scheduler.test.ts -t "does not trigger quiet digest without action"` — passed immediately because task 2.3 already implemented the trigger predicate.
+  - [x] 2.7 GREEN: No additional code was required; the trigger-existence predicate was part of task 2.3's minimal implementation.
+  - [x] 2.8 CONFIRM GREEN: Run only that test — `pnpm exec vitest run backend/src/queue/test/scheduler.test.ts -t "does not trigger quiet digest without action"` — verified it passes.
+  - [x] 2.9 RED (integration): Write one focused failing scheduler test proving repeated and concurrent scheduler ticks do not create overlapping pending quiet-triggered digests for the same channel, even when multiple action messages are present before the worker sends.
+  - [x] 2.10 CONFIRM RED: Run only that test — `pnpm vitest backend/src/queue/test/scheduler.test.ts -t "does not create overlapping quiet-triggered digests"` — and verify it fails because current scheduling creates per-message or repeated attempts.
+  - [x] 2.11 GREEN: Add a pending quiet-triggered digest guard and rely on the trigger-message partial unique index so repeated/concurrent scheduler ticks keep a single pending snapshot.
+  - [x] 2.12 CONFIRM GREEN: Run only that test — `pnpm vitest backend/src/queue/test/scheduler.test.ts -t "does not create overlapping quiet-triggered digests"` — and verify it passes.
+  - [x] 2.13 RED (integration): Write one focused scheduler test proving daily-mode users still use scheduled daily digest attempts and quiet-triggered scheduling ignores them.
+  - [x] 2.14 CONFIRM RED: Run only that test — `pnpm exec vitest run backend/src/queue/test/scheduler.test.ts -t "quiet-triggered scheduler ignores daily mode"` — passed immediately because scheduler mode predicates were already correct.
+  - [x] 2.15 GREEN: Update scheduler exports/imports and `backend/src/worker.ts` so the worker calls `scheduleQuietTriggeredDigests(db, now)` instead of `scheduleImmediateDeliveries(db, now)`. Keep `scheduleDailyDigests` unchanged.
+  - [x] 2.16 CONFIRM GREEN: Run only that test — `pnpm vitest backend/src/queue/test/scheduler.test.ts -t "quiet-triggered scheduler ignores daily mode"` — and verify it passes.
+  - [x] 2.17 REFACTOR: Extract shared digest ranking/snapshot SQL only if it reduces duplication without changing daily behavior. If refactored, rerun `pnpm vitest backend/src/queue/test/scheduler.test.ts backend/src/queue/test/digest-scheduler.test.ts`.
+  - [x] 2.18 CHECK PHASE: Run `pnpm check` and `pnpm vitest backend/src/queue/test/scheduler.test.ts backend/src/queue/test/digest-scheduler.test.ts`.
+
+- [x] 3.0 Ensure delivery worker and quiet heartbeats use digest semantics
+  - [x] 3.1 RED (integration): Write one focused failing handler test in `backend/src/queue/test/deliver-channel.test.ts` proving a quiet-triggered digest attempt sends `DeliveryMessage.type = "digest"` from `digest_items`, not `type = "immediate"`, and advances `last_digest_cutoff_at` on success.
+  - [x] 3.2 CONFIRM RED: Run only that handler test — `pnpm exec vitest run backend/src/queue/test/deliver-channel.test.ts -t "sends quiet-triggered digest snapshot"` — passed immediately because the existing generic digest path supports triggered digests.
+  - [x] 3.3 GREEN: No handler change was required; `kind = 'digest'` already builds from `digest_items` and advances the cutoff after success.
+  - [x] 3.4 CONFIRM GREEN: The selected handler test passed.
+  - [x] 3.5 RED (integration): Write one focused handler or worker-loop regression test proving retryable connector failures resend the same quiet-triggered `digest_items` snapshot and do not advance the cutoff until success.
+  - [x] 3.6 CONFIRM RED: Run only that test — `pnpm exec vitest run backend/src/queue/test/deliver-channel.test.ts -t "retries quiet-triggered digest from the same snapshot"` — passed immediately through the existing digest retry path.
+  - [x] 3.7 GREEN: No additional code was required; quiet-triggered attempts already reuse the digest snapshot path.
+  - [x] 3.8 CONFIRM GREEN: The selected retry test passed.
+  - [x] 3.9 RED (integration): Write one focused heartbeat scheduler test proving a successful quiet-triggered digest suppresses a quiet heartbeat in the same heartbeat window.
+  - [x] 3.10 CONFIRM RED: Run only that heartbeat test — `pnpm vitest backend/src/queue/test/heartbeat-scheduler.test.ts -t "quiet-triggered digest suppresses heartbeat"` — and verify it fails because heartbeat logic currently checks immediate attempts.
+  - [x] 3.11 GREEN: Update `scheduleQuietHeartbeats` and the delivery handler's heartbeat freshness check so successful quiet-triggered digest attempts (`kind = 'digest' AND message_id IS NOT NULL`) count as recent quiet-mode user-facing activity. Keep legacy sent immediate attempts counting only if needed for historical compatibility.
+  - [x] 3.12 CONFIRM GREEN: Run only that heartbeat test — `pnpm vitest backend/src/queue/test/heartbeat-scheduler.test.ts -t "quiet-triggered digest suppresses heartbeat"` — and verify it passes.
+  - [x] 3.13 RED (integration): Write one focused settings/service test proving a pending quiet-triggered digest attempt is failed when the user changes delivery mode, so stale quiet windows cannot send after switching to daily.
+  - [x] 3.14 CONFIRM RED: Run only that test — `pnpm exec vitest run backend/src/channels/test/settings.test.ts -t "mode change fails pending quiet-triggered digest"` — passed immediately because mode changes already fail every pending attempt.
+  - [x] 3.15 GREEN: No service change was necessary.
+  - [x] 3.16 CONFIRM GREEN: The selected settings test passed.
+  - [x] 3.17 REFACTOR: Remove or quarantine misleading active-code references that build `DeliveryMessage.type = "immediate"` for quiet-mode sends. Preserve legacy handling only where tests prove it is needed for safe old rows.
+  - [x] 3.18 CHECK PHASE: Run `pnpm check` and `pnpm vitest backend/src/queue/test/deliver-channel.test.ts backend/src/queue/test/heartbeat-scheduler.test.ts backend/src/channels/test/settings.test.ts backend/src/queue/test/worker-loop.test.ts`.
+
+- [x] 4.0 Update end-to-end and canonical-message regression coverage
+  - [x] 4.1 RED (integration): Rewrite the quiet Discord e2e in `backend/src/channels/test/delivery-e2e.test.ts` so a quiet-mode user with mixed-category canonical messages gets exactly one connector message with `type = "digest"`, all eligible categories, daily digest ordering, and no immediate payload.
+  - [x] 4.2 CONFIRM RED: Run only the quiet e2e — `pnpm exec vitest run backend/src/channels/test/delivery-e2e.test.ts` — passed immediately because earlier scheduler/worker tasks completed the wiring.
+  - [x] 4.3 GREEN: No additional wiring changes were required.
+  - [x] 4.4 CONFIRM GREEN: The quiet e2e passed.
+  - [x] 4.5 RED (integration): Update `backend/src/messages/test/normalized-messages.test.ts` so normalized duplicate mailbox messages produce one quiet-triggered digest item for the canonical message, not one immediate attempt.
+  - [x] 4.6 CONFIRM RED: Run only the normalized-message regression — `pnpm exec vitest run backend/src/messages/test/normalized-messages.test.ts -t "canonical"` — passed immediately against the completed scheduler.
+  - [x] 4.7 GREEN: No additional production change was required.
+  - [x] 4.8 CONFIRM GREEN: The canonical regression passed.
+  - [x] 4.9 RED (integration): Update invalid webhook e2e coverage in `backend/src/channels/test/invalid-webhook-e2e.test.ts` to use quiet-triggered digest scheduling and assert invalid webhook failure still disables the channel and prevents future scheduling.
+  - [x] 4.10 CONFIRM RED: Run only invalid webhook e2e — `pnpm exec vitest run backend/src/channels/test/invalid-webhook-e2e.test.ts` — passed immediately against the completed scheduler.
+  - [x] 4.11 GREEN: No production change was required.
+  - [x] 4.12 CONFIRM GREEN: The invalid webhook e2e passed.
+  - [x] 4.13 RED (integration): Run the daily digest e2e as a regression — `pnpm exec vitest run backend/src/channels/test/digest-e2e.test.ts` — it remained green.
+  - [x] 4.14 GREEN: No shared-path fix was required.
+  - [x] 4.15 CONFIRM GREEN: The daily digest e2e passed.
+  - [x] 4.16 REFACTOR: Consolidate test fixture names around `quiet-triggered digest` and remove stale `immediate` expectations from active quiet-mode tests.
+  - [x] 4.17 CHECK PHASE: Run `pnpm check` and `pnpm vitest backend/src/channels/test/delivery-e2e.test.ts backend/src/channels/test/digest-e2e.test.ts backend/src/channels/test/invalid-webhook-e2e.test.ts backend/src/messages/test/normalized-messages.test.ts`.
+
+- [x] 5.0 Update user-facing copy, docs, and stale naming
+  - [x] 5.1 RED (static/content): Search for obsolete quiet-mode claims with `grep -R "one .*requires_action\|per email\|per-message\|no digest\|immediate delivery\|scheduleImmediateDeliveries" -n backend frontend shared vibes --exclude-dir=node_modules` and record matches that refer to active behavior rather than legacy history.
+  - [x] 5.2 GREEN: Update `frontend/src/components/Sidebar.tsx`, `frontend/src/components/EditScheduleDialog.tsx` if needed, `vibes/spec-pigeon.md`, and relevant tests/comments so quiet mode is described as sending the same digest when a new action-required message triggers it.
+  - [x] 5.3 CONFIRM GREEN: Rerun the grep command from 5.1 and verify remaining matches are only legacy schema/history references, old PRD history, or tests intentionally covering legacy safety.
+  - [x] 5.4 RED (type/static): Run `pnpm --filter @pigeon/frontend typecheck`; it passed with zero diagnostics.
+  - [x] 5.5 GREEN: No frontend type fix was required.
+  - [x] 5.6 CONFIRM GREEN: Frontend typecheck passed.
+  - [x] 5.7 REFACTOR: Rename exported scheduler functions, test names, and local variables from immediate-delivery terminology to quiet-triggered-digest terminology where they describe active behavior. Avoid renaming database enum values unless a migration/test proves it is necessary.
+  - [x] 5.8 CHECK PHASE: Run `pnpm check`.
+
+- [ ] 6.0 Final verification
+  - [x] 6.1 Run `pnpm format`.
+  - [x] 6.2 Run `pnpm lint`.
+  - [x] 6.3 Run `pnpm typecheck`.
+  - [x] 6.4 Run `pnpm test` — covered by the final successful `pnpm check:all`: 59 files and 384 tests passed.
+  - [x] 6.5 Run `pnpm build`.
+  - [x] 6.6 Run `pnpm check:all`.
+  - [x] 6.7 The first full test run exposed stale migration totals and one transient Windows `EBUSY` cleanup error. Migration assertions now include migration 0013, the reset suite passed in isolation, and the final aggregate gate passed without failures. No PRD clarification was required.
+  - [ ] 6.8 Commit message: `feat(delivery): send quiet mode triggered digests`.

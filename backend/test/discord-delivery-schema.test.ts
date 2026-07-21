@@ -12,6 +12,8 @@
  * constraints, defaults, and deliver_channel job type are absent — that is the
  * expected RED.
  */
+import { readFile, readdir } from "node:fs/promises";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import { withTestDb } from "./db";
 import { runMigrations } from "../src/migrate/runner";
@@ -104,6 +106,52 @@ async function insertDigestAttempt(
       ${new Date("2026-01-02T08:00:00Z")}, ${"pending"}
     ) RETURNING id`;
   return inserted[0]?.id as string;
+}
+
+async function resolveMigrationsDir(): Promise<string> {
+  const primary = resolve(process.cwd(), "db/migrations");
+  try {
+    await readdir(primary);
+    return primary;
+  } catch {
+    const fallback = resolve(process.cwd(), "../db/migrations");
+    await readdir(fallback);
+    return fallback;
+  }
+}
+
+async function applyMigrationsThrough(
+  db: TestDbClient,
+  maxId: number,
+): Promise<void> {
+  const dir = await resolveMigrationsDir();
+  const migrations = (await readdir(dir))
+    .map((filename) => {
+      const match = /^(\d+)_.*\.sql$/.exec(filename);
+      if (!match) return undefined;
+      return {
+        id: Number(match[1]),
+        filename,
+        path: resolve(dir, filename),
+      };
+    })
+    .filter(
+      (
+        migration,
+      ): migration is { id: number; filename: string; path: string } =>
+        migration !== undefined && migration.id <= maxId,
+    )
+    .sort((a, b) => a.id - b.id);
+
+  for (const migration of migrations) {
+    const sql = await readFile(migration.path, "utf8");
+    await db.withTx(async (tx) => {
+      await tx.unsafe(sql);
+      await tx`
+        INSERT INTO schema_migrations(id, filename)
+        VALUES (${migration.id}, ${migration.filename})`;
+    });
+  }
 }
 
 describe("migration 0009 — Discord delivery schema", () => {
@@ -243,12 +291,11 @@ describe("migration 0009 — Discord delivery schema", () => {
         db.query`
           INSERT INTO delivery_attempts(
             user_id, channel_id, kind, message_id, scheduled_for,
-            window_start, window_end, status
+            window_start, status
           ) VALUES (
             ${userId}, ${channelId}, ${"digest"}, ${emailId},
             ${new Date("2026-01-03T08:00:00Z")},
-            ${new Date("2026-01-02T08:00:00Z")},
-            ${new Date("2026-01-03T08:00:00Z")}, ${"pending"}
+            ${new Date("2026-01-02T08:00:00Z")}, ${"pending"}
           )`,
       ).rejects.toThrow();
       await expect(
@@ -269,6 +316,44 @@ describe("migration 0009 — Discord delivery schema", () => {
             ${"failed"}, ${-1}
           )`,
       ).rejects.toThrow();
+    } finally {
+      await close();
+    }
+  });
+
+  it("accepts quiet-triggered digest attempt with trigger message and digest window", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const { userId, channelId, emailId } = await seedUserChannelAndEmail(
+        db,
+        "quiettriggereddigestattempt",
+      );
+
+      await expect(
+        db.query`
+          INSERT INTO delivery_attempts(
+            user_id,
+            channel_id,
+            kind,
+            message_id,
+            scheduled_for,
+            window_start,
+            window_end,
+            status,
+            omitted_count
+          ) VALUES (
+            ${userId},
+            ${channelId},
+            ${"digest"},
+            ${emailId},
+            ${new Date("2026-01-02T08:00:00Z")},
+            ${new Date("2026-01-01T08:00:00Z")},
+            ${new Date("2026-01-02T08:00:00Z")},
+            ${"pending"},
+            ${0}
+          )`,
+      ).resolves.toBeDefined();
     } finally {
       await close();
     }
@@ -309,6 +394,148 @@ describe("migration 0009 — Discord delivery schema", () => {
             ${new Date("2026-01-01T08:00:00Z")}, ${scheduledFor}, ${"pending"}
           )`,
       ).rejects.toThrow();
+    } finally {
+      await close();
+    }
+  });
+
+  it("prevents duplicate quiet-triggered digest attempts", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const { userId, channelId, emailId } = await seedUserChannelAndEmail(
+        db,
+        "quiettriggeredunique",
+      );
+
+      await db.query`
+        INSERT INTO delivery_attempts(
+          user_id,
+          channel_id,
+          kind,
+          message_id,
+          scheduled_for,
+          window_start,
+          window_end,
+          status
+        ) VALUES (
+          ${userId},
+          ${channelId},
+          ${"digest"},
+          ${emailId},
+          ${new Date("2026-01-02T08:00:00Z")},
+          ${new Date("2026-01-01T08:00:00Z")},
+          ${new Date("2026-01-02T08:00:00Z")},
+          ${"pending"}
+        )`;
+      await expect(
+        db.query`
+          INSERT INTO delivery_attempts(
+            user_id,
+            channel_id,
+            kind,
+            message_id,
+            scheduled_for,
+            window_start,
+            window_end,
+            status
+          ) VALUES (
+            ${userId},
+            ${channelId},
+            ${"digest"},
+            ${emailId},
+            ${new Date("2026-01-03T08:00:00Z")},
+            ${new Date("2026-01-02T08:00:00Z")},
+            ${new Date("2026-01-03T08:00:00Z")},
+            ${"pending"}
+          )`,
+      ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await close();
+    }
+  });
+
+  it("fails pending legacy immediate attempts", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await applyMigrationsThrough(db, 12);
+      const {
+        userId,
+        channelId,
+        emailId: pendingMessageId,
+      } = await seedUserChannelAndEmail(db, "legacy-immediate-pending");
+      const historyMailboxId = await insertMailbox(
+        db,
+        userId,
+        "legacy-immediate-history@example.com",
+      );
+      const sentMessageId = await insertEmail(
+        db,
+        historyMailboxId,
+        "uid-legacy-immediate-sent",
+      );
+      const failedMessageId = await insertEmail(
+        db,
+        historyMailboxId,
+        "uid-legacy-immediate-failed",
+      );
+
+      await db.query`
+        INSERT INTO delivery_attempts(
+          user_id,
+          channel_id,
+          kind,
+          message_id,
+          status,
+          provider_message_id,
+          last_error,
+          sent_at
+        ) VALUES
+          (
+            ${userId},
+            ${channelId},
+            ${"immediate"},
+            ${pendingMessageId},
+            ${"pending"},
+            ${null},
+            ${null},
+            ${null}
+          ),
+          (
+            ${userId},
+            ${channelId},
+            ${"immediate"},
+            ${sentMessageId},
+            ${"sent"},
+            ${"discord-message-1"},
+            ${null},
+            ${new Date("2026-01-02T08:00:00Z")}
+          ),
+          (
+            ${userId},
+            ${channelId},
+            ${"immediate"},
+            ${failedMessageId},
+            ${"failed"},
+            ${null},
+            ${"legacy failure"},
+            ${null}
+          )`;
+
+      await runMigrations(db);
+
+      const rows = await db.query`
+        SELECT m.identity_key, da.status
+        FROM delivery_attempts da
+        JOIN messages m ON m.id = da.message_id
+        WHERE da.channel_id = ${channelId}
+          AND da.kind = ${"immediate"}
+        ORDER BY m.identity_key`;
+      expect(rows).toEqual([
+        { identity_key: "uid-legacy-immediate-failed", status: "failed" },
+        { identity_key: "uid-legacy-immediate-pending", status: "failed" },
+        { identity_key: "uid-legacy-immediate-sent", status: "sent" },
+      ]);
     } finally {
       await close();
     }

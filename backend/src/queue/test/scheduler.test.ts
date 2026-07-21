@@ -18,7 +18,8 @@ import { enqueueSyncJob, enqueueClassifyJob } from "../store";
 import {
   runSchedulerTick,
   enqueueDueClassifyJobs,
-  scheduleImmediateDeliveries,
+  scheduleQuietTriggeredDigests,
+  scheduleDailyDigests,
 } from "../scheduler";
 import type { Db } from "../../db/index";
 
@@ -403,149 +404,282 @@ describe("scheduler", () => {
   });
 });
 
-describe("immediate delivery scheduler", () => {
-  it("filters quiet delivery eligibility and idempotently creates owned attempts and jobs", async () => {
+describe("quiet-triggered digest scheduler", () => {
+  it("quiet-triggered digest snapshots all categories", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
       const baselineAt = new Date("2026-01-03T09:00:00Z");
-      const classifiedAfter = new Date("2026-01-03T09:05:00Z");
-      const receivedAfter = new Date("2026-01-03T09:01:00Z");
       const now = new Date("2026-01-03T10:00:00Z");
-
-      const firstQuietOwner = await insertDeliveryOwner(
+      const owner = await insertDeliveryOwner(
         db,
-        "immediate-owner-a",
+        "quiet-triggered-all-categories",
         "quiet",
         "active",
         baselineAt,
       );
-      const firstEmailId = await insertEmail(db, firstQuietOwner.mailboxId, {
-        summary: "First action.",
+      const actionMessageId = await insertEmail(db, owner.mailboxId, {
+        summary: "Action summary.",
         category: "requires_action",
-        classifiedAt: classifiedAfter,
-        receivedAt: receivedAfter,
+        classifiedAt: new Date("2026-01-03T09:10:00Z"),
+        receivedAt: new Date("2026-01-03T09:10:00Z"),
       });
-      await insertEmail(db, firstQuietOwner.mailboxId, {
-        summary: "Old classification.",
-        category: "requires_action",
-        classifiedAt: new Date("2026-01-03T08:59:00Z"),
-        receivedAt: receivedAfter,
+      const importantMessageId = await insertEmail(db, owner.mailboxId, {
+        summary: "Important summary.",
+        category: "important",
+        classifiedAt: new Date("2026-01-03T09:20:00Z"),
+        receivedAt: new Date("2026-01-03T09:20:00Z"),
       });
-      for (const category of ["important", "noise"]) {
-        await insertEmail(db, firstQuietOwner.mailboxId, {
-          summary: `${category} summary.`,
-          category,
-          classifiedAt: classifiedAfter,
-          receivedAt: receivedAfter,
-        });
-      }
+      const noiseMessageId = await insertEmail(db, owner.mailboxId, {
+        summary: "Noise summary.",
+        category: "noise",
+        classifiedAt: new Date("2026-01-03T09:30:00Z"),
+        receivedAt: new Date("2026-01-03T09:30:00Z"),
+      });
 
-      const secondQuietOwner = await insertDeliveryOwner(
+      await scheduleQuietTriggeredDigests(db, now);
+
+      const attempts = await db.query`
+        SELECT message_id, kind, status
+        FROM delivery_attempts
+        WHERE user_id = ${owner.userId}
+      `;
+      const items = await db.query`
+        SELECT di.message_id, di.position, di.category, di.summary
+        FROM digest_items di
+        JOIN delivery_attempts da ON da.id = di.delivery_attempt_id
+        WHERE da.user_id = ${owner.userId}
+        ORDER BY di.position
+      `;
+      const jobs = await db.query`
+        SELECT j.type, j.status
+        FROM jobs j
+        JOIN delivery_attempts da
+          ON da.id::text = j.payload->>'deliveryAttemptId'
+        WHERE da.user_id = ${owner.userId}
+      `;
+      const legacyImmediateAttempts = await db.query`
+        SELECT count(*)::int AS count
+        FROM delivery_attempts
+        WHERE user_id = ${owner.userId} AND kind = 'immediate'
+      `;
+
+      expect({ attempts, items, jobs, legacyImmediateAttempts }).toEqual({
+        attempts: [
+          {
+            message_id: actionMessageId,
+            kind: "digest",
+            status: "pending",
+          },
+        ],
+        items: [
+          {
+            message_id: actionMessageId,
+            position: 1,
+            category: "requires_action",
+            summary: "Action summary.",
+          },
+          {
+            message_id: importantMessageId,
+            position: 2,
+            category: "important",
+            summary: "Important summary.",
+          },
+          {
+            message_id: noiseMessageId,
+            position: 3,
+            category: "noise",
+            summary: "Noise summary.",
+          },
+        ],
+        jobs: [{ type: "deliver_channel", status: "pending" }],
+        legacyImmediateAttempts: [{ count: 0 }],
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("does not trigger quiet digest without action", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const baselineAt = new Date("2026-01-03T09:00:00Z");
+      const now = new Date("2026-01-03T10:00:00Z");
+      const owner = await insertDeliveryOwner(
         db,
-        "immediate-owner-b",
+        "quiet-triggered-no-action",
         "quiet",
         "active",
         baselineAt,
       );
-      const secondEmailId = await insertEmail(db, secondQuietOwner.mailboxId, {
-        summary: "Second action.",
-        category: "requires_action",
-        classifiedAt: classifiedAfter,
-        receivedAt: receivedAfter,
+      await insertEmail(db, owner.mailboxId, {
+        summary: "Important summary.",
+        category: "important",
+        classifiedAt: new Date("2026-01-03T09:10:00Z"),
+        receivedAt: new Date("2026-01-03T09:10:00Z"),
+      });
+      await insertEmail(db, owner.mailboxId, {
+        summary: "Noise summary.",
+        category: "noise",
+        classifiedAt: new Date("2026-01-03T09:20:00Z"),
+        receivedAt: new Date("2026-01-03T09:20:00Z"),
       });
 
+      await scheduleQuietTriggeredDigests(db, now);
+
+      const rows = await db.query`
+        SELECT
+          (SELECT count(*)::int FROM delivery_attempts) AS attempt_count,
+          (SELECT count(*)::int FROM digest_items) AS item_count,
+          (SELECT count(*)::int FROM jobs WHERE type = 'deliver_channel')
+            AS job_count
+      `;
+      expect(rows).toEqual([{ attempt_count: 0, item_count: 0, job_count: 0 }]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("quiet-triggered digest scheduler ignores daily mode while daily scheduler still creates that owner's due digest", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const baselineAt = new Date("2026-01-12T06:00:00Z");
+      const dueAt = new Date("2026-01-12T08:00:00Z");
+      const now = new Date("2026-01-12T10:00:00Z");
       const dailyOwner = await insertDeliveryOwner(
         db,
-        "immediate-daily",
+        "quiet-triggered-daily-mode",
         "daily",
         "active",
         baselineAt,
       );
-      await insertEmail(db, dailyOwner.mailboxId, {
-        summary: "Daily action.",
+      await db.query`
+        UPDATE delivery_settings
+        SET digest_time = '08:00'::time,
+            digest_days = ARRAY[1]::smallint[],
+            timezone = 'UTC'
+        WHERE user_id = ${dailyOwner.userId}
+      `;
+      const actionMessageId = await insertEmail(db, dailyOwner.mailboxId, {
+        summary: "Daily action summary.",
         category: "requires_action",
-        classifiedAt: classifiedAfter,
-        receivedAt: receivedAfter,
+        classifiedAt: new Date("2026-01-12T07:30:00Z"),
+        receivedAt: new Date("2026-01-12T07:30:00Z"),
       });
 
-      const erroredOwner = await insertDeliveryOwner(
-        db,
-        "immediate-error",
-        "quiet",
-        "error",
-        baselineAt,
-      );
-      await insertEmail(db, erroredOwner.mailboxId, {
-        summary: "Errored channel action.",
-        category: "requires_action",
-        classifiedAt: classifiedAfter,
-        receivedAt: receivedAfter,
-      });
-
-      await Promise.all([
-        scheduleImmediateDeliveries(db, now),
-        scheduleImmediateDeliveries(db, now),
-        scheduleImmediateDeliveries(db, now),
-      ]);
-      await scheduleImmediateDeliveries(db, now);
+      await scheduleQuietTriggeredDigests(db, now);
+      await scheduleDailyDigests(db, now);
 
       const attempts = await db.query`
-        SELECT
-          da.message_id,
-          da.user_id AS attempt_user_id,
-          da.channel_id,
-          da.kind,
-          da.status,
-          m.user_id AS message_user_id,
-          c.user_id AS channel_user_id
-        FROM delivery_attempts da
-        JOIN messages m ON m.id = da.message_id
-        JOIN channels c ON c.id = da.channel_id
-        WHERE da.kind = 'immediate'
-        ORDER BY da.message_id`;
+        SELECT kind, message_id, scheduled_for, window_start, window_end, status
+        FROM delivery_attempts
+        WHERE user_id = ${dailyOwner.userId}
+        ORDER BY scheduled_for NULLS LAST, message_id NULLS LAST
+      `;
+      const items = await db.query`
+        SELECT di.message_id, di.position, di.category, di.summary
+        FROM digest_items di
+        JOIN delivery_attempts da ON da.id = di.delivery_attempt_id
+        WHERE da.user_id = ${dailyOwner.userId}
+        ORDER BY di.position
+      `;
       const jobs = await db.query`
-        SELECT da.message_id, j.type, j.status
+        SELECT j.type, j.status
         FROM jobs j
-        LEFT JOIN delivery_attempts da
+        JOIN delivery_attempts da
           ON da.id::text = j.payload->>'deliveryAttemptId'
-        WHERE j.type = 'deliver_channel'
-        ORDER BY da.message_id`;
-      const eligible = [
-        {
-          emailId: firstEmailId,
-          userId: firstQuietOwner.userId,
-          channelId: firstQuietOwner.channelId,
-        },
-        {
-          emailId: secondEmailId,
-          userId: secondQuietOwner.userId,
-          channelId: secondQuietOwner.channelId,
-        },
-      ];
-      const expectedAttempts = eligible
-        .map(({ emailId, userId, channelId }) => ({
-          message_id: emailId,
-          attempt_user_id: userId,
-          channel_id: channelId,
-          kind: "immediate",
-          status: "pending",
-          message_user_id: userId,
-          channel_user_id: userId,
-        }))
-        .sort((left, right) => left.message_id.localeCompare(right.message_id));
-      const expectedJobs = eligible
-        .map(({ emailId }) => ({
-          message_id: emailId,
-          type: "deliver_channel",
-          status: "pending",
-        }))
-        .sort((left, right) => left.message_id.localeCompare(right.message_id));
+        WHERE da.user_id = ${dailyOwner.userId}
+      `;
 
-      expect({ attempts, jobs }).toEqual({
-        attempts: expectedAttempts,
-        jobs: expectedJobs,
+      expect({ attempts, items, jobs }).toEqual({
+        attempts: [
+          {
+            kind: "digest",
+            message_id: null,
+            scheduled_for: dueAt,
+            window_start: baselineAt,
+            window_end: dueAt,
+            status: "pending",
+          },
+        ],
+        items: [
+          {
+            message_id: actionMessageId,
+            position: 1,
+            category: "requires_action",
+            summary: "Daily action summary.",
+          },
+        ],
+        jobs: [{ type: "deliver_channel", status: "pending" }],
       });
+    } finally {
+      await close();
+    }
+  });
+
+  it("does not create overlapping quiet-triggered digests", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const owner = await insertDeliveryOwner(
+        db,
+        "quiet-triggered-overlap",
+        "quiet",
+        "active",
+        new Date("2026-01-03T09:00:00Z"),
+      );
+      await insertEmail(db, owner.mailboxId, {
+        summary: "First action.",
+        category: "requires_action",
+        classifiedAt: new Date("2026-01-03T09:10:00Z"),
+        receivedAt: new Date("2026-01-03T09:10:00Z"),
+      });
+      await insertEmail(db, owner.mailboxId, {
+        summary: "Second action.",
+        category: "requires_action",
+        classifiedAt: new Date("2026-01-03T09:20:00Z"),
+        receivedAt: new Date("2026-01-03T09:20:00Z"),
+      });
+      const firstTick = new Date("2026-01-03T09:15:00Z");
+      const laterTick = new Date("2026-01-03T09:30:00Z");
+
+      await scheduleQuietTriggeredDigests(db, firstTick);
+      await scheduleQuietTriggeredDigests(db, firstTick);
+      await Promise.all([
+        scheduleQuietTriggeredDigests(db, laterTick),
+        scheduleQuietTriggeredDigests(db, laterTick),
+        scheduleQuietTriggeredDigests(db, laterTick),
+      ]);
+      await scheduleQuietTriggeredDigests(db, laterTick);
+
+      const rows = await db.query`
+        SELECT
+          count(DISTINCT da.id)::int AS attempt_count,
+          count(DISTINCT di.delivery_attempt_id)::int AS snapshot_count,
+          count(di.message_id)::int AS item_count,
+          count(DISTINCT di.message_id)::int AS distinct_item_count,
+          count(DISTINCT j.id)::int AS job_count
+        FROM delivery_attempts da
+        LEFT JOIN digest_items di ON di.delivery_attempt_id = da.id
+        LEFT JOIN jobs j
+          ON j.type = 'deliver_channel'
+         AND j.payload->>'deliveryAttemptId' = da.id::text
+        WHERE da.channel_id = ${owner.channelId}
+          AND da.kind = 'digest'
+          AND da.message_id IS NOT NULL
+          AND da.status = 'pending'
+      `;
+      expect(rows).toEqual([
+        {
+          attempt_count: 1,
+          snapshot_count: 1,
+          item_count: 1,
+          distinct_item_count: 1,
+          job_count: 1,
+        },
+      ]);
     } finally {
       await close();
     }

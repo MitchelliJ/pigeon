@@ -21,7 +21,7 @@ describe("runMigrations", () => {
       await runMigrations(db);
       const rows =
         await db.query`SELECT id, filename FROM schema_migrations ORDER BY id`;
-      expect(rows.length).toBe(12);
+      expect(rows.length).toBe(13);
       const r0 = rows[0];
       // postgres.js returns BIGINT as string; coerce for the numeric assertion.
       expect(Number(r0?.id)).toBe(1);
@@ -59,6 +59,9 @@ describe("runMigrations", () => {
       const r11 = rows[11];
       expect(Number(r11?.id)).toBe(12);
       expect(r11?.filename).toBe("0012_normalized_messages.sql");
+      const r12 = rows[12];
+      expect(Number(r12?.id)).toBe(13);
+      expect(r12?.filename).toBe("0013_quiet_triggered_digests.sql");
     } finally {
       await close();
     }
@@ -85,7 +88,7 @@ describe("runMigrations", () => {
       await runMigrations(db);
       const count =
         await db.query`SELECT count(*)::int AS n FROM schema_migrations`;
-      expect(count).toEqual([{ n: 12 }]);
+      expect(count).toEqual([{ n: 13 }]);
     } finally {
       await close();
     }

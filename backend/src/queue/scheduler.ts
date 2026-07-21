@@ -87,44 +87,146 @@ export async function enqueueDueClassifyJobs(db: Db): Promise<void> {
 }
 
 /**
- * Atomically create immediate attempts and their delivery jobs for newly
- * classified action emails owned by active quiet-mode channel users. The
- * attempt's unique index makes concurrent scheduler scans safe.
+ * Close a quiet-mode window when at least one new action email arrived, using
+ * that action as the digest's idempotency key while snapshotting all eligible
+ * categories exactly like a daily digest.
  */
-export async function scheduleImmediateDeliveries(
+export async function scheduleQuietTriggeredDigests(
   db: Db,
   now: Date,
 ): Promise<void> {
   await db.withTx(async (tx) => {
     await tx`
-      WITH inserted_attempts AS (
+      WITH candidates AS (
+        SELECT
+          ds.user_id,
+          c.id AS channel_id,
+          ds.delivery_baseline_at,
+          COALESCE(
+            ds.last_digest_cutoff_at,
+            ds.delivery_baseline_at
+          ) AS window_start,
+          trigger_message.id AS message_id
+        FROM delivery_settings ds
+        JOIN channels c
+          ON c.user_id = ds.user_id
+         AND c.status = 'active'
+        JOIN LATERAL (
+          SELECT m.id
+          FROM messages m
+          WHERE m.user_id = ds.user_id
+            AND m.summary IS NOT NULL
+            AND m.category = 'requires_action'
+            AND m.classified_at > COALESCE(
+              ds.last_digest_cutoff_at,
+              ds.delivery_baseline_at
+            )
+            AND m.classified_at <= ${now}
+            AND m.received_at >= ds.delivery_baseline_at
+          ORDER BY m.received_at DESC, m.classified_at DESC, m.id DESC
+          LIMIT 1
+        ) trigger_message ON true
+        WHERE ds.mode = 'quiet'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM delivery_attempts pending_digest
+            WHERE pending_digest.channel_id = c.id
+              AND pending_digest.kind = 'digest'
+              AND pending_digest.message_id IS NOT NULL
+              AND pending_digest.status = 'pending'
+          )
+      ),
+      ranked AS (
+        SELECT
+          c.channel_id,
+          c.message_id,
+          m.id AS item_message_id,
+          m.category,
+          m.summary,
+          row_number() OVER (
+            PARTITION BY c.channel_id, c.message_id
+            ORDER BY
+              CASE m.category
+                WHEN 'requires_action' THEN 1
+                WHEN 'important' THEN 2
+                WHEN 'noise' THEN 3
+              END,
+              m.received_at DESC,
+              m.classified_at DESC,
+              m.id DESC
+          ) AS position,
+          count(*) OVER (
+            PARTITION BY c.channel_id, c.message_id
+          ) AS total_count
+        FROM candidates c
+        JOIN messages m ON m.user_id = c.user_id
+        WHERE m.summary IS NOT NULL
+          AND m.category IS NOT NULL
+          AND m.classified_at > c.window_start
+          AND m.classified_at <= ${now}
+          AND m.received_at >= c.delivery_baseline_at
+      ),
+      inserted_attempts AS (
         INSERT INTO delivery_attempts(
-          user_id, channel_id, kind, message_id, status
+          user_id,
+          channel_id,
+          kind,
+          message_id,
+          scheduled_for,
+          window_start,
+          window_end,
+          status,
+          omitted_count
         )
         SELECT
-          m.user_id,
-          c.id,
-          'immediate',
-          m.id,
-          'pending'
-        FROM messages m
-        JOIN delivery_settings ds ON ds.user_id = m.user_id
-        JOIN channels c ON c.user_id = m.user_id
-        WHERE ds.mode = 'quiet'
-          AND c.status = 'active'
-          AND m.category = 'requires_action'
-          AND m.classified_at > ds.delivery_baseline_at
-          AND m.classified_at <= ${now}
-        ORDER BY c.id, m.id
+          c.user_id,
+          c.channel_id,
+          'digest',
+          c.message_id,
+          ${now},
+          c.window_start,
+          ${now},
+          'pending',
+          GREATEST(
+            COALESCE((
+              SELECT max(r.total_count)
+              FROM ranked r
+              WHERE r.channel_id = c.channel_id
+                AND r.message_id = c.message_id
+            ), 0) - 25,
+            0
+          )::integer
+        FROM candidates c
         ON CONFLICT DO NOTHING
-        RETURNING id
+        RETURNING id, channel_id, message_id
+      ),
+      inserted_items AS (
+        INSERT INTO digest_items(
+          delivery_attempt_id,
+          message_id,
+          position,
+          category,
+          summary
+        )
+        SELECT
+          ia.id,
+          r.item_message_id,
+          r.position::smallint,
+          r.category,
+          r.summary
+        FROM inserted_attempts ia
+        JOIN ranked r
+          ON r.channel_id = ia.channel_id
+         AND r.message_id = ia.message_id
+        WHERE r.position <= 25
+        RETURNING delivery_attempt_id
       )
       INSERT INTO jobs(type, payload, status)
       SELECT
         'deliver_channel',
-        jsonb_build_object('deliveryAttemptId', id::text),
+        jsonb_build_object('deliveryAttemptId', ia.id::text),
         'pending'
-      FROM inserted_attempts
+      FROM inserted_attempts ia
       ON CONFLICT DO NOTHING
     `;
   });
@@ -132,8 +234,8 @@ export async function scheduleImmediateDeliveries(
 
 /**
  * Queue the latest due Monday 08:00 local heartbeat for active quiet-mode
- * channels when no successful immediate delivery occurred in its preceding
- * weekly window.
+ * channels when no successful user-facing quiet activity occurred in its
+ * preceding weekly window.
  */
 export async function scheduleQuietHeartbeats(
   db: Db,
@@ -201,12 +303,18 @@ export async function scheduleQuietHeartbeats(
         FROM candidates candidate
         WHERE NOT EXISTS (
           SELECT 1
-          FROM delivery_attempts immediate
-          WHERE immediate.channel_id = candidate.channel_id
-            AND immediate.kind = 'immediate'
-            AND immediate.status = 'sent'
-            AND immediate.sent_at > candidate.window_start
-            AND immediate.sent_at <= ${now}
+          FROM delivery_attempts recent_user_facing_activity
+          WHERE recent_user_facing_activity.channel_id = candidate.channel_id
+            AND (
+              recent_user_facing_activity.kind = 'immediate'
+              OR (
+                recent_user_facing_activity.kind = 'digest'
+                AND recent_user_facing_activity.message_id IS NOT NULL
+              )
+            )
+            AND recent_user_facing_activity.status = 'sent'
+            AND recent_user_facing_activity.sent_at > candidate.window_start
+            AND recent_user_facing_activity.sent_at <= ${now}
         )
         ON CONFLICT DO NOTHING
         RETURNING id

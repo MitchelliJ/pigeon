@@ -23,7 +23,7 @@ import { createChannelRegistry } from "./channels/registry";
 import {
   runSchedulerTick,
   enqueueDueClassifyJobs,
-  scheduleImmediateDeliveries,
+  scheduleQuietTriggeredDigests,
   scheduleDailyDigests,
   scheduleQuietHeartbeats,
 } from "./queue/scheduler";
@@ -55,7 +55,7 @@ if (isMain) {
     const now = new Date();
     void Promise.all([
       runSchedulerTick(db),
-      scheduleImmediateDeliveries(db, now),
+      scheduleQuietTriggeredDigests(db, now),
       scheduleDailyDigests(db, now),
       scheduleQuietHeartbeats(db, now),
     ]).catch(() => {

@@ -155,6 +155,8 @@ async function buildMessage(
     return { type: "heartbeat" };
   }
 
+  // Quiet mode no longer schedules new immediate attempts, but persisted
+  // legacy rows must keep delivering correctly until they age out.
   if (attempt.kind === "immediate") {
     const rows = await db.query`
       SELECT m.category, m.summary
@@ -216,12 +218,19 @@ async function isHeartbeatCurrent(
         AND ${attempt.scheduled_for}::timestamptz > ds.delivery_baseline_at
         AND NOT EXISTS (
           SELECT 1
-          FROM delivery_attempts immediate
-          WHERE immediate.channel_id = ${attempt.channel_id}
-            AND immediate.kind = 'immediate'
-            AND immediate.status = 'sent'
-            AND immediate.sent_at > ${attempt.window_start}::timestamptz
-            AND immediate.sent_at <= now()
+          FROM delivery_attempts recent_user_facing_activity
+          WHERE recent_user_facing_activity.channel_id = ${attempt.channel_id}
+            AND (
+              recent_user_facing_activity.kind = 'immediate'
+              OR (
+                recent_user_facing_activity.kind = 'digest'
+                AND recent_user_facing_activity.message_id IS NOT NULL
+              )
+            )
+            AND recent_user_facing_activity.status = 'sent'
+            AND recent_user_facing_activity.sent_at
+                  > ${attempt.window_start}::timestamptz
+            AND recent_user_facing_activity.sent_at <= now()
         )
     ) AS is_current
   `;

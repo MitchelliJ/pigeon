@@ -1,15 +1,15 @@
 /*
- * End-to-end coverage for quiet-mode Discord delivery through the real channel
- * services, immediate scheduler, durable queue, and worker. Only the external
+ * End-to-end coverage for quiet-triggered Discord digests through the real
+ * channel service, scheduler, durable queue, and worker. Only the external
  * channel boundary is faked so sent payloads remain visible to the test.
  */
 import { describe, expect, it } from "vitest";
 
-import type { ChannelKind } from "@pigeon/shared";
+import type { Category, ChannelKind } from "@pigeon/shared";
 import { withTestDb } from "../../../test/db";
 import type { Db } from "../../db/index";
 import { runMigrations } from "../../migrate/runner";
-import { scheduleImmediateDeliveries } from "../../queue/scheduler";
+import { scheduleQuietTriggeredDigests } from "../../queue/scheduler";
 import { runWorkerTick } from "../../queue/worker-loop";
 import { createVault } from "../../vault/index";
 import type { Vault } from "../../vault/index";
@@ -99,28 +99,37 @@ async function insertMailbox(
 async function insertClassifiedEmail(
   db: Db,
   mailboxId: string,
-  classifiedAt: Date,
-): Promise<void> {
-  await db.query`
+  input: {
+    providerUid: string;
+    category: Category;
+    summary: string;
+    receivedAt: Date;
+    classifiedAt: Date;
+  },
+): Promise<string> {
+  const rows = await db.query`
     WITH inserted AS (
       INSERT INTO messages(
         user_id, identity_key, from_name, from_address, subject, body,
         received_at, summary, category, classified_at
       )
       SELECT
-        user_id, 'quiet-delivery-e2e-uid', 'Alice', 'alice@example.com',
-        'Action needed', 'Please reply.', ${classifiedAt},
-        'Reply before Friday.', 'requires_action', ${classifiedAt}
+        user_id, ${input.providerUid}, 'Alice', 'alice@example.com',
+        'Canonical message', 'Canonical body', ${input.receivedAt},
+        ${input.summary}, ${input.category}, ${input.classifiedAt}
       FROM mailboxes WHERE id = ${mailboxId}
       RETURNING id
+    ), linked AS (
+      INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
+      SELECT ${mailboxId}, id, ${input.providerUid}, false FROM inserted
     )
-    INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
-    SELECT ${mailboxId}, id, 'quiet-delivery-e2e-uid', false FROM inserted
+    SELECT id FROM inserted
   `;
+  return String(rows[0]?.id);
 }
 
 describe("quiet Discord delivery e2e", () => {
-  it("sends one post-baseline requires-action email once through scheduler and worker ticks", async () => {
+  it("sends one category-ranked digest when an action message closes the quiet window", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -141,23 +150,41 @@ describe("quiet Discord delivery e2e", () => {
       const settings = await updateDeliverySettings(db, userId, {
         mode: "quiet",
       });
-      const classifiedAt = new Date(
-        settings.deliveryBaselineAt.getTime() + 1_000,
-      );
-      const schedulerNow = new Date(classifiedAt.getTime() + 1_000);
-      await insertClassifiedEmail(db, mailboxId, classifiedAt);
+      const baselineAt = settings.deliveryBaselineAt;
+      const action = {
+        category: "requires_action" as const,
+        summary: "Reply before Friday.",
+      };
+      const important = {
+        category: "important" as const,
+        summary: "Review the account update.",
+      };
+      const noise = {
+        category: "noise" as const,
+        summary: "This week's newsletter.",
+      };
 
-      await scheduleImmediateDeliveries(db, schedulerNow);
-      await runWorkerTick(
-        db,
-        vault,
-        5,
-        undefined,
-        undefined,
-        undefined,
-        registry,
-      );
-      await scheduleImmediateDeliveries(db, schedulerNow);
+      const actionMessageId = await insertClassifiedEmail(db, mailboxId, {
+        providerUid: "quiet-action",
+        ...action,
+        receivedAt: new Date(baselineAt.getTime() + 1_000),
+        classifiedAt: new Date(baselineAt.getTime() + 4_000),
+      });
+      await insertClassifiedEmail(db, mailboxId, {
+        providerUid: "quiet-important",
+        ...important,
+        receivedAt: new Date(baselineAt.getTime() + 2_000),
+        classifiedAt: new Date(baselineAt.getTime() + 3_000),
+      });
+      await insertClassifiedEmail(db, mailboxId, {
+        providerUid: "quiet-noise",
+        ...noise,
+        receivedAt: new Date(baselineAt.getTime() + 3_000),
+        classifiedAt: new Date(baselineAt.getTime() + 2_000),
+      });
+      const windowEnd = new Date(baselineAt.getTime() + 5_000);
+
+      await scheduleQuietTriggeredDigests(db, windowEnd);
       await runWorkerTick(
         db,
         vault,
@@ -169,24 +196,58 @@ describe("quiet Discord delivery e2e", () => {
       );
 
       const attempts = await db.query`
-        SELECT kind, status
+        SELECT kind, message_id, status, window_end, omitted_count
         FROM delivery_attempts
         WHERE user_id = ${userId}
       `;
+      const digestItems = await db.query`
+        SELECT di.category, di.summary
+        FROM digest_items di
+        JOIN delivery_attempts da ON da.id = di.delivery_attempt_id
+        WHERE da.user_id = ${userId}
+        ORDER BY di.position
+      `;
+      const deliverySettings = await db.query`
+        SELECT last_digest_cutoff_at
+        FROM delivery_settings
+        WHERE user_id = ${userId}
+      `;
+      const immediateAttempts = await db.query`
+        SELECT count(*)::int AS count
+        FROM delivery_attempts
+        WHERE user_id = ${userId} AND kind = 'immediate'
+      `;
+
       expect({
-        connectionTests: connector.testConfigs,
         deliveryPayloads: connector.messages,
         attempts,
+        digestItems,
+        deliverySettings,
+        immediatePayloads: connector.messages.filter(
+          (message) => message.type === "immediate",
+        ),
+        immediateAttempts,
       }).toEqual({
-        connectionTests: [{ webhookUrl: WEBHOOK_URL }],
         deliveryPayloads: [
           {
-            type: "immediate",
-            category: "requires_action",
-            summary: "Reply before Friday.",
+            type: "digest",
+            items: [action, important, noise],
+            omittedCount: 0,
           },
         ],
-        attempts: [{ kind: "immediate", status: "sent" }],
+        attempts: [
+          {
+            kind: "digest",
+            message_id: actionMessageId,
+            status: "sent",
+            window_end: windowEnd,
+            omitted_count: 0,
+          },
+        ],
+        digestItems: [action, important, noise],
+        deliverySettings: [{ last_digest_cutoff_at: windowEnd }],
+        immediatePayloads: [],
+        immediateAttempts: [{ count: 0 }],
       });
     } finally {
       await close();

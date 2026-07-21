@@ -315,8 +315,8 @@ export default function Sidebar(props: {
                   Quiet mode
                 </h3>
                 <p class="digest-sub">
-                  Receive your email digest only when emails requiring action
-                  are received.
+                  Receive the same ranked email digest as daily mode, only when
+                  a new email requires action.
                 </p>
               </>
             }

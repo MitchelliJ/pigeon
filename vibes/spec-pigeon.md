@@ -13,8 +13,9 @@ messaging channel you already use. For every incoming email, Pigeon writes a
 one-sentence summary and sorts it into one of three buckets — _requires action_,
 _important_, or _status/noise_. It then reaches you the way you chose: a
 once-a-day digest of everything (ranked, most important first), or a quiet mode
-that stays silent until a _requires action_ email arrives and then nudges you
-immediately with a full email summary.
+that stays silent until a _requires action_ email arrives and then sends the
+same ranked digest of all canonical messages since the last successful
+delivery.
 
 The promise is **simple and done-for-you**: no rules to build, no dashboards to
 babysit. You keep working; Pigeon handles the watching, decides what deserves

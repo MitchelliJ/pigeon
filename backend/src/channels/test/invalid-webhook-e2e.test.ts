@@ -1,6 +1,6 @@
 /*
  * End-to-end coverage for a permanently invalid Discord webhook through the
- * real channel service, immediate scheduler, durable queue, worker, and
+ * real channel service, quiet-triggered digest scheduler, durable queue, worker, and
  * dashboard route. Only the external connector boundary is faked.
  */
 import { describe, expect, it } from "vitest";
@@ -11,7 +11,7 @@ import { generateToken, hashToken } from "../../auth/tokens";
 import type { Db } from "../../db/index";
 import { dashboardRoutes } from "../../mailboxes/dashboard";
 import { runMigrations } from "../../migrate/runner";
-import { scheduleImmediateDeliveries } from "../../queue/scheduler";
+import { scheduleQuietTriggeredDigests } from "../../queue/scheduler";
 import { runWorkerTick } from "../../queue/worker-loop";
 import { createVault } from "../../vault/index";
 import type { Vault } from "../../vault/index";
@@ -109,8 +109,8 @@ async function insertClassifiedEmail(
   mailboxId: string,
   providerUid: string,
   classifiedAt: Date,
-): Promise<void> {
-  await db.query`
+): Promise<string> {
+  const rows = await db.query`
     WITH inserted AS (
       INSERT INTO messages(
         user_id, identity_key, from_name, from_address, subject, body,
@@ -125,7 +125,9 @@ async function insertClassifiedEmail(
     )
     INSERT INTO mailbox_messages(mailbox_id, message_id, provider_uid, seen)
     SELECT ${mailboxId}, id, ${providerUid}, false FROM inserted
+    RETURNING message_id
   `;
+  return String(rows[0]?.message_id);
 }
 
 describe("invalid Discord webhook e2e", () => {
@@ -153,14 +155,14 @@ describe("invalid Discord webhook e2e", () => {
       const firstClassifiedAt = new Date(
         settings.deliveryBaselineAt.getTime() + 1_000,
       );
-      await insertClassifiedEmail(
+      const firstTriggerMessageId = await insertClassifiedEmail(
         db,
         mailboxId,
         "invalid-webhook-first",
         firstClassifiedAt,
       );
 
-      await scheduleImmediateDeliveries(
+      await scheduleQuietTriggeredDigests(
         db,
         new Date(firstClassifiedAt.getTime() + 1_000),
       );
@@ -184,13 +186,13 @@ describe("invalid Discord webhook e2e", () => {
       const serializedDashboard = JSON.stringify(dashboard);
 
       const secondClassifiedAt = new Date(firstClassifiedAt.getTime() + 2_000);
-      await insertClassifiedEmail(
+      const secondTriggerMessageId = await insertClassifiedEmail(
         db,
         mailboxId,
         "invalid-webhook-second",
         secondClassifiedAt,
       );
-      await scheduleImmediateDeliveries(
+      await scheduleQuietTriggeredDigests(
         db,
         new Date(secondClassifiedAt.getTime() + 1_000),
       );
@@ -205,10 +207,17 @@ describe("invalid Discord webhook e2e", () => {
       );
 
       const attempts = await db.query`
-        SELECT status, last_error
+        SELECT kind, message_id, status, last_error
         FROM delivery_attempts
         WHERE user_id = ${userId}
         ORDER BY created_at
+      `;
+      const secondTriggerAttempts = await db.query`
+        SELECT count(*)::int AS count
+        FROM delivery_attempts
+        WHERE user_id = ${userId}
+          AND kind = 'digest'
+          AND message_id = ${secondTriggerMessageId}
       `;
       const jobs = await db.query`
         SELECT status
@@ -223,6 +232,7 @@ describe("invalid Discord webhook e2e", () => {
         leakedWebhook: serializedDashboard.includes(WEBHOOK_URL),
         leakedConfig: serializedDashboard.includes('"config'),
         attempts,
+        secondTriggerAttempts,
         jobs,
         sendCount: connector.sendCount,
       }).toEqual({
@@ -234,7 +244,15 @@ describe("invalid Discord webhook e2e", () => {
         }),
         leakedWebhook: false,
         leakedConfig: false,
-        attempts: [{ status: "failed", last_error: SAFE_ERROR }],
+        attempts: [
+          {
+            kind: "digest",
+            message_id: firstTriggerMessageId,
+            status: "failed",
+            last_error: SAFE_ERROR,
+          },
+        ],
+        secondTriggerAttempts: [{ count: 0 }],
         jobs: [{ status: "succeeded" }],
         sendCount: 1,
       });

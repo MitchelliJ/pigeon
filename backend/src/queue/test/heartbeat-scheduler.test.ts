@@ -219,7 +219,7 @@ describe("scheduleQuietHeartbeats", () => {
     }
   });
 
-  it("suppresses a heartbeat only for a successful immediate delivery inside the heartbeat window", async () => {
+  it("suppresses a heartbeat only for legacy immediate-delivery history inside the heartbeat window", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -292,6 +292,58 @@ describe("scheduleQuietHeartbeats", () => {
         { email: "heartbeat-future@example.com", job_count: 1 },
         { email: "heartbeat-retry-states@example.com", job_count: 1 },
       ]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("quiet-triggered digest suppresses heartbeat", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const now = new Date("2026-01-12T10:00:00.000Z");
+      const owner = await insertOwner(db, "heartbeat-triggered-digest", {
+        baselineAt: new Date("2026-01-10T00:00:00.000Z"),
+      });
+      const messageRows = await db.query`
+        INSERT INTO messages(
+          user_id, identity_key, from_name, from_address, subject, body,
+          received_at
+        ) VALUES (
+          ${owner.userId}, 'test:heartbeat-triggered-digest', 'Sender',
+          'sender@example.com', 'Subject', 'Body',
+          ${new Date("2026-01-11T11:00:00.000Z")}
+        )
+        RETURNING id
+      `;
+      const triggerMessageId = String(messageRows[0]?.id);
+      await db.query`
+        INSERT INTO delivery_attempts(
+          user_id, channel_id, kind, message_id, scheduled_for, window_start,
+          window_end, status, sent_at
+        ) VALUES (
+          ${owner.userId}, ${owner.channelId}, 'digest', ${triggerMessageId},
+          ${new Date("2026-01-11T12:00:00.000Z")},
+          ${new Date("2026-01-10T00:00:00.000Z")},
+          ${new Date("2026-01-11T12:00:00.000Z")}, 'sent',
+          ${new Date("2026-01-11T12:00:00.000Z")}
+        )
+      `;
+
+      await scheduleQuietHeartbeats(db, now);
+
+      const rows = await db.query`
+        SELECT
+          count(DISTINCT da.id)::int AS attempt_count,
+          count(DISTINCT j.id)::int AS job_count
+        FROM delivery_attempts da
+        LEFT JOIN jobs j
+          ON da.id::text = j.payload->>'deliveryAttemptId'
+         AND j.type = 'deliver_channel'
+        WHERE da.user_id = ${owner.userId}
+          AND da.kind = 'heartbeat'
+      `;
+      expect(rows).toEqual([{ attempt_count: 0, job_count: 0 }]);
     } finally {
       await close();
     }

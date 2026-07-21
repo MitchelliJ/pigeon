@@ -8,7 +8,7 @@ import { loadCategoryCounts, loadEmailPage } from "../../emails/service";
 import {
   enqueueDueClassifyJobs,
   scheduleDailyDigests,
-  scheduleImmediateDeliveries,
+  scheduleQuietTriggeredDigests,
 } from "../../queue/scheduler";
 import type { Db } from "../../db/index";
 import type { MailboxConnector } from "../../mailboxes/connectors/types";
@@ -137,7 +137,7 @@ describe("normalized messages", () => {
     }
   });
 
-  it("deduplicates classification, delivery, digest, dashboard, and deletes orphans", async () => {
+  it("deduplicates canonical message classification, quiet-triggered digest delivery, dashboard, and deletes orphans", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
@@ -174,16 +174,32 @@ describe("normalized messages", () => {
           ${new Date("2026-07-20T12:00:00Z")}
         )`;
 
-      await scheduleImmediateDeliveries(db, new Date("2026-07-20T13:30:00Z"));
-      await scheduleImmediateDeliveries(db, new Date("2026-07-20T13:30:00Z"));
-      expect(
-        await db.query`
-          SELECT count(*)::int AS n FROM delivery_attempts
-          WHERE kind = 'immediate' AND message_id = ${messageId}`,
-      ).toEqual([{ n: 1 }]);
+      await scheduleQuietTriggeredDigests(db, new Date("2026-07-20T13:30:00Z"));
+      await scheduleQuietTriggeredDigests(db, new Date("2026-07-20T13:30:00Z"));
+      const quietAttempts = await db.query`
+        SELECT kind, message_id
+        FROM delivery_attempts
+        WHERE kind = 'digest' AND message_id = ${messageId}`;
+      const quietDigestItems = await db.query`
+        SELECT di.message_id
+        FROM digest_items di
+        JOIN delivery_attempts da ON da.id = di.delivery_attempt_id
+        WHERE da.kind = 'digest' AND da.message_id = ${messageId}`;
+      const legacyImmediateAttempts = await db.query`
+        SELECT count(*)::int AS n FROM delivery_attempts
+        WHERE kind = 'immediate' AND message_id = ${messageId}`;
+      expect({
+        quietAttempts,
+        quietDigestItems,
+        legacyImmediateAttempts,
+      }).toEqual({
+        quietAttempts: [{ kind: "digest", message_id: messageId }],
+        quietDigestItems: [{ message_id: messageId }],
+        legacyImmediateAttempts: [{ n: 0 }],
+      });
 
-      await db.query`
-        DELETE FROM delivery_attempts WHERE kind = 'immediate'`;
+      await db.query`DELETE FROM digest_items`;
+      await db.query`DELETE FROM delivery_attempts WHERE kind = 'digest'`;
       await db.query`
         UPDATE delivery_settings
         SET mode = 'daily', digest_time = '14:00', timezone = 'UTC'
