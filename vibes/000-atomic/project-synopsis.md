@@ -48,9 +48,9 @@ person.)
 
 ## 3. Initial capabilities
 
-Ordered as a **walking skeleton** by build dependency: 1–8 deliver a usable
-product (connect a mailbox → sync → summarize → classify → deliver to Discord);
-9–10 make it a business; 11–12 broaden reach. Each becomes its own PRD.
+Ordered as a **walking skeleton** by build dependency: 1–7 deliver core product;
+8–9 are UX/polish features added during development; 10 completes the quiet-mode loop;
+11–12 make it a business; 13–15 broaden reach. Each becomes its own PRD.
 
 1. **Project initialization & infrastructure baseline** — Stand up the backend and worker runtime in the monorepo with database, migrations, config/secret loading, containerized local + Hetzner deployment, and CI (no business logic).
 2. **Authentication & user accounts** — Provide sign-up, login, and session management that every other resource attaches to.
@@ -59,13 +59,15 @@ product (connect a mailbox → sync → summarize → classify → deliver to Di
 5. **Job queue, workers & scheduler** — Run a durable, database-backed background job queue with a plan-configurable cron trigger that enqueues sync work executed idempotently by workers.
 6. **LLM processing (summarize + classify)** — For each new email, make a single Mistral call returning a one-sentence summary and one of the three categories, honoring the user's plain-language classification instructions.
 7. **Channel connectors & delivery modes (Discord)** — Deliver ranked digests to Discord in either daily-digest or quiet mode, built one-way but structured so two-way can be added later.
-8. **Quiet-mode reassurance / heartbeat** — Send periodic "still here, all is well" messages during quiet stretches so silence never reads as failure.
-9. **Plans, tiers, limits & quota enforcement** — Enforce subscription tiers that cap inbox count, sync frequency, and monthly emails processed at enqueue/processing time.
-10. **Payment integration & subscription lifecycle** — Use Mollie checkout, webhooks, and a billing portal to keep each user's active tier (and limits) in sync with their subscription.
-11. **OAuth provider connectors (Gmail / Microsoft)** _(later)_ — Add OAuth-based Gmail and Microsoft mailboxes to the connector abstraction, honoring each provider's scope and verification requirements.
-12. **Additional channels (WhatsApp, Signal)** _(later)_ — Extend the channel abstraction once Discord has proven the model.
-13. **Security hardening & rate limiting** _(later)_ — Add brute-force protection and rate limiting on auth and other abuse-prone endpoints (in-memory or DB-backed sliding window, constant-time responses), along with any cross-cutting security review (CSRF, session fixation, audit logging) identified as gaps after the auth and billing features ship. Also owns the LLM cost/failure guardrails deferred from Feature 6 (summarize/classify has no retry cap beyond the generic job queue backoff, no spend limit, and a permanently-failing email just stays silently unclassified — revisit here).
-14. **Account & session management** _(later)_ — Expand the auth surface beyond the minimal sign-up/login/reset of Feature 2: standalone "log out everywhere," list and revoke active sessions (device/IP/last-seen), change password while logged in, change email (with new-address verification), and self-service account/data deletion (GDPR erasure) designed as a cascade across the user's mailboxes, emails, channels, and billing records.
+8. **Sync backfill date alignment** — Allow users to control the historical range of emails synced on first mailbox connect, avoiding unnecessary processing of entire archives.
+9. **Initial sync progress feedback** — Surface sync status and progress to the user during initial backfill so they know the app is working.
+10. **Quiet-mode triggered digests** — In quiet mode, send ranked digests only when a _requires action_ email arrives, and include all canonical messages since the last successful delivery.
+11. **Plans, tiers, limits & quota enforcement** — Enforce subscription tiers that cap inbox count, sync frequency, and monthly emails processed at enqueue/processing time.
+12. **Payment integration & subscription lifecycle** — Use Mollie checkout, webhooks, and a billing portal to keep each user's active tier (and limits) in sync with their subscription.
+13. **OAuth provider connectors (Gmail / Microsoft)** _(later)_ — Add OAuth-based Gmail and Microsoft mailboxes to the connector abstraction, honoring each provider's scope and verification requirements.
+14. **Additional channels (WhatsApp, Signal)** _(later)_ — Extend the channel abstraction once Discord has proven the model.
+15. **Security hardening & rate limiting** _(later)_ — Add brute-force protection and rate limiting on auth and other abuse-prone endpoints (in-memory or DB-backed sliding window, constant-time responses), along with any cross-cutting security review (CSRF, session fixation, audit logging) identified as gaps after the auth and billing features ship. Also owns the LLM cost/failure guardrails deferred from Feature 6 (summarize/classify has no retry cap beyond the generic job queue backoff, no spend limit, and a permanently-failing email just stays silently unclassified — revisit here).
+16. **Account & session management** _(later)_ — Expand the auth surface beyond the minimal sign-up/login/reset of Feature 2: standalone "log out everywhere," list and revoke active sessions (device/IP/last-seen), change password while logged in, change email (with new-address verification), and self-service account/data deletion (GDPR erasure) designed as a cascade across the user's mailboxes, emails, channels, and billing records.
 
 > **Deferred but kept architecturally open:** two-way channel conversations and
 > an agentic action layer (calendar writes, drafting/sending replies, per-contact
