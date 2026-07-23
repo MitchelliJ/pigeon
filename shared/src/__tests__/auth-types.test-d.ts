@@ -15,6 +15,14 @@ import type {
   VerifyEmailInput,
   ResetRequestInput,
   ResetPasswordInput,
+  ChangePasswordInput,
+  RequestEmailChangeInput,
+  ConfirmEmailChangeInput,
+  ProfileSettings,
+  RequestAccountDeletionInput,
+  AccountDeletionStatus,
+  RequestAccountDeletionResult,
+  CancelAccountDeletionResult,
 } from "../index";
 
 // SessionUser — the signed-in person surfaced to the client after auth.
@@ -90,4 +98,98 @@ const _resetPasswordComplete: ResetPasswordInput = {
 // @ts-expect-error newPassword is required
 const _resetPasswordMissingNewPassword: ResetPasswordInput = {
   token: "reset-token-abc",
+};
+
+// ChangePasswordInput — current + new password are both required.
+const _changePasswordComplete: ChangePasswordInput = {
+  currentPassword: "current-horse-battery-staple",
+  newPassword: "fresh-horse-battery-staple",
+};
+
+// @ts-expect-error currentPassword is required
+const _changePasswordMissingCurrentPassword: ChangePasswordInput = {
+  newPassword: "fresh-horse-battery-staple",
+};
+
+// RequestEmailChangeInput — current password + new email.
+const _requestEmailChangeComplete: RequestEmailChangeInput = {
+  currentPassword: "current-horse-battery-staple",
+  newEmail: "ada.next@example.com",
+};
+
+// @ts-expect-error newEmail is required
+const _requestEmailChangeMissingNewEmail: RequestEmailChangeInput = {
+  currentPassword: "current-horse-battery-staple",
+};
+
+// ConfirmEmailChangeInput — just the single-use token.
+const _confirmEmailChangeComplete: ConfirmEmailChangeInput = {
+  token: "change-email-token-abc",
+};
+
+// @ts-expect-error token is required
+const _confirmEmailChangeMissingToken: ConfirmEmailChangeInput = {};
+
+// ProfileSettings — authenticated settings/profile response shape.
+const _profileSettingsComplete: ProfileSettings = {
+  name: "Ada Lovelace",
+  email: "ada@example.com",
+  tier: "pro",
+  deletionRequestedAt: null,
+  deletesAt: "2026-07-21T09:30:00.000Z",
+};
+
+// @ts-expect-error deletionRequestedAt is required even when null
+const _profileSettingsMissingDeletionRequestedAt: ProfileSettings = {
+  name: "Ada Lovelace",
+  email: "ada@example.com",
+  tier: "pro",
+  deletesAt: null,
+};
+
+// RequestAccountDeletionInput — password + exact confirmation phrase.
+const _requestAccountDeletionComplete: RequestAccountDeletionInput = {
+  password: "current-horse-battery-staple",
+  confirm: "delete my account",
+};
+
+const _requestAccountDeletionWrongConfirm: RequestAccountDeletionInput = {
+  password: "current-horse-battery-staple",
+  // @ts-expect-error confirm must be the exact literal
+  confirm: "DELETE MY ACCOUNT",
+};
+
+// AccountDeletionStatus — nullable when no deletion is scheduled.
+const _accountDeletionStatusIdle: AccountDeletionStatus = {
+  requestedAt: null,
+  deletesAt: null,
+};
+
+const _accountDeletionStatusScheduled: AccountDeletionStatus = {
+  requestedAt: "2026-07-20T09:30:00.000Z",
+  deletesAt: "2026-07-21T09:30:00.000Z",
+};
+
+// RequestAccountDeletionResult — request succeeded and deletion is scheduled.
+const _requestAccountDeletionResultComplete: RequestAccountDeletionResult = {
+  ok: true,
+  requestedAt: "2026-07-20T09:30:00.000Z",
+  deletesAt: "2026-07-21T09:30:00.000Z",
+};
+
+const _requestAccountDeletionResultWrongOk: RequestAccountDeletionResult = {
+  // @ts-expect-error ok must be the literal true
+  ok: false,
+  requestedAt: "2026-07-20T09:30:00.000Z",
+  deletesAt: "2026-07-21T09:30:00.000Z",
+};
+
+// CancelAccountDeletionResult — successful cancellation only returns ok.
+const _cancelAccountDeletionResultComplete: CancelAccountDeletionResult = {
+  ok: true,
+};
+
+const _cancelAccountDeletionResultWrongOk: CancelAccountDeletionResult = {
+  // @ts-expect-error ok must be the literal true
+  ok: false,
 };

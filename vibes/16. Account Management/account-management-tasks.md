@@ -1,0 +1,204 @@
+# Relevant Files
+
+- `db/migrations/0014_account_management.sql` - Add pending email/deletion state, the `change_email` token kind, and the idempotent `erase_account` job type/index.
+- `backend/test/auth-schema.integration.test.ts` - Verify the new user columns and token-kind database constraints against real PostgreSQL.
+- `backend/test/jobs-schema.integration.test.ts` - Verify the new queue type and in-flight uniqueness constraint against real PostgreSQL.
+- `shared/src/index.ts` - Shared request/response/profile contracts for password change, email change, and deletion state/actions.
+- `shared/src/__tests__/auth-types.test-d.ts` - Compile-time contract checks for the new account-management types.
+- `backend/src/auth/service.ts` - Reuse/export token and session helpers where appropriate; implement authenticated password/email-change services.
+- `backend/src/auth/password.ts` - Existing password verification, hashing, and strength rules reused by all three sensitive actions.
+- `backend/src/auth/routes.ts` - Existing public token-confirmation pattern used for email-change confirmation.
+- `backend/src/auth/test/account-management.integration.test.ts` - Real-PostgreSQL route/service coverage for password and email changes.
+- `backend/src/auth/test/password.test.ts` - Pure validation coverage if account-management password schemas add reusable logic.
+- `backend/src/mail/templates.ts` - New-address confirmation and old-address security-notice templates.
+- `backend/src/mail/test/templates.test.ts` - Pure unit tests for both new templates.
+- `backend/src/profile/routes.ts` - Authenticated password/email/deletion request and cancellation routes; expose deletion status.
+- `backend/src/profile/test/routes.integration.test.ts` - Profile contract and authenticated account-management route coverage.
+- `backend/src/queue/scheduler.ts` - Exclude pending-deletion users from all scheduling and enqueue due erasure work.
+- `backend/src/queue/types.ts` - Add the `erase_account` payload/job type.
+- `backend/src/queue/store.ts` - Enqueue support for the new idempotent job type if the existing generic API needs extending.
+- `backend/src/queue/handlers/erase-account.ts` - Recheck the deadline, cascade-delete the user, and scrub the retained job payload.
+- `backend/src/queue/worker-loop.ts` - Dispatch `erase_account` jobs to the new handler.
+- `backend/src/queue/test/scheduler.integration.test.ts` - Sync/classify pause and due-erasure enqueue coverage using real SQL.
+- `backend/src/queue/test/digest-scheduler.integration.test.ts` - Daily/quiet-triggered digest pause coverage.
+- `backend/src/queue/test/heartbeat-scheduler.integration.test.ts` - Quiet-heartbeat pause coverage.
+- `backend/src/queue/test/erase-account.integration.test.ts` - Deadline, cancellation-race, cascade, idempotency, and payload-scrubbing coverage.
+- `backend/src/queue/test/worker-loop.integration.test.ts` - Verify worker dispatch for `erase_account`.
+- `backend/src/worker.ts` - Register the erasure scheduler on the existing scheduler cadence.
+- `backend/src/server.ts` - Keep new routes reachable through the existing auth/profile routers (or mount a dedicated router if implementation requires it).
+- `frontend/src/lib/api.ts` - Typed account-management clients and deletion status/cancel support.
+- `frontend/src/lib/feature-16-api.test-d.ts` - Compile-time frontend API contract checks.
+- `frontend/src/components/SettingsDialog.tsx` - Separate change-password and change-email forms with reauthentication and success/error states.
+- `frontend/src/components/PrivacyPanel.tsx` - Cancellable 24-hour deletion UI and pending-deletion deadline banner.
+- `frontend/src/components/ConfirmEmailChange.tsx` - Consume an email-change token and render progress/success/error states.
+- `frontend/src/pages/confirm-email.astro` - Static landing page for emailed change-confirmation links.
+- `frontend/src/styles/global.css` - Account-security form, pending-deletion banner, and destructive-action styles where existing utilities are insufficient.
+
+# Tasks
+
+- [x] 1.0 Add the account-management database and shared API contracts
+  - [x] 1.1 RED (integration): Add one focused test to `backend/test/auth-schema.integration.test.ts` proving migrated `users` rows accept nullable `pending_email` (case-insensitive `CITEXT`) and `deletion_requested_at`, and that `auth_tokens.kind = 'change_email'` is accepted while an unknown kind is rejected. This is an integration test because PostgreSQL column types and CHECK constraints are the behavior; use the documented `withTestDb()` fixture and `runMigrations()`.
+  - [x] 1.2 CONFIRM RED: Run only that selected test with `pnpm exec vitest run --project integration backend/test/auth-schema.integration.test.ts -t "supports account-management user state and change-email tokens"`; verify it fails because migration `0014` does not exist.
+  - [x] 1.3 GREEN: Create `db/migrations/0014_account_management.sql` with nullable `users.pending_email CITEXT`, nullable `users.deletion_requested_at TIMESTAMPTZ`, the widened `auth_tokens_kind_check`, and a partial due-deletion index. Preserve all existing allowed token kinds.
+  - [x] 1.4 CONFIRM GREEN: Run only the selected auth-schema test and verify it passes.
+  - [x] 1.5 RED (integration): Add one focused test to `backend/test/jobs-schema.integration.test.ts` proving `erase_account` is accepted, duplicate pending/running jobs for the same payload `userId` are rejected, and terminal history does not block a later job. Use `withTestDb()` because this tests the PostgreSQL CHECK and partial unique index.
+  - [x] 1.6 CONFIRM RED: Run only that selected test and verify it fails because the job type/index are absent.
+  - [x] 1.7 GREEN: Extend migration `0014` to widen `jobs_type_check` without dropping existing job types and add `idx_jobs_erase_account_inflight` on `payload->>'userId'` for pending/running jobs.
+  - [x] 1.8 CONFIRM GREEN: Run only the selected jobs-schema test and verify it passes.
+  - [x] 1.9 RED (compile-time): Extend `shared/src/__tests__/auth-types.test-d.ts` with expected request/response types for password change, email-change request/confirm, profile `deletionRequestedAt`, deletion request status, and deletion cancellation.
+  - [x] 1.10 CONFIRM RED: Run `pnpm --filter @pigeon/shared typecheck`; verify it fails on missing exports.
+  - [x] 1.11 GREEN: Add the minimal exported contracts to `shared/src/index.ts`, using ISO timestamp strings at the HTTP boundary and exact literal result/error-safe shapes where useful.
+  - [x] 1.12 CONFIRM GREEN: Run `pnpm --filter @pigeon/shared typecheck`; verify it passes.
+  - [x] 1.13 REFACTOR: Format the migration/types and remove any duplicate local contract definitions introduced by the tests; rerun only the selected schema tests and shared typecheck if files change.
+  - [ ] 1.14 CHECK PHASE: Run `pnpm check` (all unit tests plus static checks).
+
+- [x] 2.0 Implement authenticated password change
+  - [x] 2.1 RED (integration): Create `backend/src/auth/test/account-management.integration.test.ts` with one focused test proving `POST /api/settings/password` rejects a wrong current password with `401 bad_credentials` and leaves the hash/sessions unchanged. Use `withTestDb()` because password persistence and session ownership are transactional SQL behavior.
+  - [x] 2.2 CONFIRM RED: Run only that selected test and verify the route is missing.
+  - [x] 2.3 GREEN: Add the authenticated, CSRF-protected, body-limited, rate-limited route and minimal service/schema logic to verify the current hash without mutation.
+  - [x] 2.4 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 2.5 RED (integration): Add one focused test proving a weak new password is rejected with `400 invalid_input` and no state change.
+  - [x] 2.6 CONFIRM RED: Run only the selected test and verify it fails for the expected missing validation.
+  - [x] 2.7 GREEN: Apply the existing `isAcceptablePassword` rule to `newPassword` and return the established typed error envelope.
+  - [x] 2.8 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 2.9 RED (integration): Add one focused test proving a successful password change atomically updates the hash, keeps the requesting session live, revokes every other live session, makes the old password fail login, and makes the new password succeed.
+  - [x] 2.10 CONFIRM RED: Run only the selected success test and verify it fails because the transaction/session behavior is absent.
+  - [x] 2.11 GREEN: Implement the transaction in `auth/service.ts`, excluding `c.get("sessionTokenHash")` from revocation and updating `users.updated_at`; return `{ ok: true }`.
+  - [x] 2.12 CONFIRM GREEN: Run only the selected success test and verify it passes.
+  - [x] 2.13 REGRESSION (integration): Add focused route-security tests proving unauthenticated and cross-origin password-change requests cannot mutate state; follow the existing auth CSRF test style rather than duplicating middleware internals.
+  - [x] 2.14 VERIFY REGRESSION: Run each selected security test and verify both pass; the middleware behavior was already introduced by task 2.3, so manufacturing RED would be invalid.
+  - [x] 2.15 REVIEW: Have the code specialist confirm middleware order/wiring is minimal; do not reimplement `requireAuth`, `csrfGuard`, `bodyLimit`, or `rateLimit`.
+  - [x] 2.16 CONFIRM REVIEW: If review changes code, run each selected security test; otherwise complete with the passing evidence from 2.14.
+  - [x] 2.17 REFACTOR: Extract only genuinely shared reauthentication/session helpers; preserve current reset/login behavior and rerun the selected password-change tests.
+  - [x] 2.18 CHECK PHASE: Run `pnpm check`.
+
+- [x] 3.0 Implement verified email change and security notifications
+  - [x] 3.1 RED (unit): Add one focused test in `backend/src/mail/test/templates.test.ts` proving the confirmation template addresses the new email, includes `/confirm-email?token=...` in HTML and text, and does not leak the token elsewhere.
+  - [x] 3.2 CONFIRM RED: Run only that selected unit test and verify it fails on the missing template.
+  - [x] 3.3 GREEN: Add the minimal `changeEmailConfirmation` template.
+  - [x] 3.4 CONFIRM GREEN: Run only the selected unit test and verify it passes.
+  - [x] 3.5 RED (unit): Add one focused test proving the old-address notice contains no confirmation token and clearly identifies an account-email-change request.
+  - [x] 3.6 CONFIRM RED: Run only that selected unit test and verify it fails.
+  - [x] 3.7 GREEN: Add the minimal `emailChangeNotice` template.
+  - [x] 3.8 CONFIRM GREEN: Run only the selected unit test and verify it passes.
+  - [x] 3.9 RED (integration): Add one focused test proving `POST /api/settings/email` rejects a wrong current password with no `pending_email`, token, or outgoing mail.
+  - [x] 3.10 CONFIRM RED: Run only the selected integration test and verify it fails because the route is absent.
+  - [x] 3.11 GREEN: Add authenticated validation/reauthentication and no-side-effect failure behavior.
+  - [x] 3.12 CONFIRM GREEN: Run only the selected integration test and verify it passes.
+  - [x] 3.13 RED (integration): Add one focused test proving a valid request stores normalised `pending_email`, leaves `users.email` unchanged, creates one hashed `change_email` token expiring in 24h, sends confirmation to the new address, and sends a token-free notice to the old address.
+  - [x] 3.14 CONFIRM RED: Run only the selected test and verify the pending/token/mail behavior is missing.
+  - [x] 3.15 GREEN: Implement request-email-change using the existing void-and-mint pattern, token hashing, mail abstraction, non-blocking mail-failure convention, and a 60s resend cooldown. A request for the current address returns success without writes/mail.
+  - [x] 3.16 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 3.17 RED (integration): Add one focused test proving a second allowed request rotates/consumes the prior outstanding token and that a request inside the cooldown neither mints nor emails again.
+  - [x] 3.18 CONFIRM EXISTING GREEN: The selected test passed immediately because 3.15 already implemented the required rotation/cooldown behavior.
+  - [x] 3.19 GREEN: Reuse/generalize existing token helpers minimally; keep signup verification and reset semantics unchanged.
+  - [x] 3.20 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 3.21 RED (integration): Add one focused test proving `POST /api/settings/email/confirm` succeeds with a valid token **without a session**, CAS-consumes it, swaps/clears the email fields, preserves existing sessions, and makes login use only the new address.
+  - [x] 3.22 CONFIRM RED: Run only the selected test and verify the confirmation route/service is missing.
+  - [x] 3.23 GREEN: Implement token-authenticated confirmation as one transaction; do not mount `requireAuth`; preserve CSRF/body-limit protections and return the updated profile.
+  - [x] 3.24 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 3.25 RED (integration): Add focused tests for (a) invalid/expired/consumed token → `400 invalid_or_expired_token` with no mutation and (b) address claimed before confirm → `409 email_taken` with no partial email swap. Keep each test to one behavior.
+  - [x] 3.26 CONFIRM RED: Run each selected test separately and verify the expected failures.
+  - [x] 3.27 GREEN: Add compare-and-swap token consumption/race handling and map PostgreSQL `23505` without leaking a raw error; ensure the transaction rollback leaves a retryable pending state where appropriate.
+  - [x] 3.28 CONFIRM GREEN: Run each selected test separately and verify both pass.
+  - [x] 3.29 REFACTOR: Consolidate token constants/helpers without changing signup/reset behavior; rerun the new mail unit tests and selected email integration tests.
+  - [x] 3.30 CHECK PHASE: Run `pnpm check`.
+
+- [x] 4.0 Implement deletion request, status, and grace-period cancellation
+  - [x] 4.1 RED (integration): Add one focused test proving `POST /api/privacy/erase` rejects an incorrect password with `401 bad_credentials`, does not set `deletion_requested_at`, and preserves the session/data.
+  - [x] 4.2 CONFIRM RED: Run only that selected test and verify the route is missing.
+  - [x] 4.3 GREEN: Add the authenticated, CSRF/body/rate-limited route and current-password verification.
+  - [x] 4.4 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 4.5 RED (integration): Add one focused test proving any confirmation text other than exact `delete my account` is rejected with `400 invalid_input` and no state change.
+  - [x] 4.6 CONFIRM RED: Run only the selected test and verify it fails for missing confirmation validation.
+  - [x] 4.7 GREEN: Add exact server-side confirmation validation; never rely only on the frontend phrase check.
+  - [x] 4.8 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 4.9 RED (integration): Add one focused test proving a valid request stamps `deletion_requested_at`, returns the ISO deadline/status, keeps all data and sessions intact, and repeated requests do not extend the original deadline.
+  - [x] 4.10 CONFIRM RED: Run only the selected test and verify it fails for missing/idempotent scheduling behavior.
+  - [x] 4.11 GREEN: Atomically set the timestamp only when null and return `requestedAt`/`deletesAt` (24h later); do not disconnect inboxes or revoke sessions.
+  - [x] 4.12 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 4.13 RED (integration): Extend the profile route test with one focused assertion that `GET /api/settings/profile` exposes nullable `deletionRequestedAt`/`deletesAt`, allowing the Privacy page to restore banner state after reload.
+  - [x] 4.14 CONFIRM RED: Run only the selected profile-status test and verify it fails on the missing fields.
+  - [x] 4.15 GREEN: Return the shared profile contract from `profile/routes.ts` without exposing hashes, tokens, or pending email unnecessarily.
+  - [x] 4.16 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 4.17 RED (integration): Add one focused test proving `POST /api/privacy/erase/cancel` before the deadline clears the timestamp idempotently and leaves all account data available.
+  - [x] 4.18 CONFIRM RED: Run only the selected cancellation test and verify the route is absent.
+  - [x] 4.19 GREEN: Implement cancellation with a row lock/conditional update so it cannot race incorrectly with erasure.
+  - [x] 4.20 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 4.21 RED (integration): Add one focused test proving cancellation at/after the 24h deadline returns `409 deletion_due` and does not clear the timestamp.
+  - [x] 4.22 CONFIRM RED: Run only the selected due-cancellation test and verify it fails.
+  - [x] 4.23 GREEN: Add the deadline condition and typed conflict response.
+  - [x] 4.24 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 4.25 REFACTOR: Centralize 24h deadline calculation/status mapping so routes and worker use one domain rule where practical; rerun the selected deletion tests.
+  - [x] 4.26 CHECK PHASE: Run `pnpm check`.
+
+- [x] 5.0 Pause every background scheduler during the deletion grace period
+  - [x] 5.1 RED (integration): Add one focused test to `backend/src/queue/test/scheduler.integration.test.ts` proving `runSchedulerTick` does not enqueue sync work for a pending-deletion user while still enqueueing an equivalent active user's mailbox. Real PostgreSQL is required for ownership joins and enqueue uniqueness; use `withTestDb()`.
+  - [x] 5.2 CONFIRM RED: Run only that selected test and verify it fails because the candidate query includes pending users.
+  - [x] 5.3 GREEN: Add `users.deletion_requested_at IS NULL` to sync scheduling selection.
+  - [x] 5.4 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 5.5 RED (integration): Add one focused test proving `enqueueDueClassifyJobs` excludes messages owned by pending-deletion users while preserving active-user selection.
+  - [x] 5.6 CONFIRM RED: Run only that selected test and verify it fails.
+  - [x] 5.7 GREEN: Join/filter message ownership through `users` without changing dead-letter or 500-row-cap semantics.
+  - [x] 5.8 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 5.9 RED (integration): Add one focused test to `digest-scheduler.integration.test.ts` for each digest scheduler (`scheduleDailyDigests`, `scheduleQuietTriggeredDigests`) proving pending users produce no attempts/jobs; run each selected test independently.
+  - [x] 5.10 CONFIRM RED: Run each selected digest test and verify it fails for the expected missing filter.
+  - [x] 5.11 GREEN: Add ownership filters to both digest candidate queries while preserving active-user behavior and dedupe indexes.
+  - [x] 5.12 CONFIRM GREEN: Run each selected digest test and verify it passes.
+  - [x] 5.13 RED (integration): Add one focused test to `heartbeat-scheduler.integration.test.ts` proving pending-deletion users produce no quiet heartbeat attempt/job.
+  - [x] 5.14 CONFIRM RED: Run only that selected heartbeat test and verify it fails.
+  - [x] 5.15 GREEN: Add the pending-deletion exclusion to heartbeat scheduling.
+  - [x] 5.16 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 5.17 REFACTOR: Keep the SQL filters explicit in each owning query rather than creating hidden global scheduler state; rerun all five selected scheduler tests if changed.
+  - [x] 5.18 CHECK PHASE: Run `pnpm check`.
+
+- [x] 6.0 Enqueue and execute idempotent account erasure after 24 hours
+  - [x] 6.1 RED (integration): Create `backend/src/queue/test/erase-account.integration.test.ts` with one focused test proving the erasure scheduler enqueues exactly one `erase_account` job for a user due at 24h, none before 24h, and repeated ticks dedupe. Use `withTestDb()` because due selection and the partial unique index are SQL behavior.
+  - [x] 6.2 CONFIRM RED: Run only that selected test and verify it fails because the scheduler/job type is not wired.
+  - [x] 6.3 GREEN: Add `enqueueDueAccountErasures(db)` and the typed payload/store insert with `ON CONFLICT DO NOTHING`.
+  - [x] 6.4 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 6.5 RED (integration): Add one focused test proving `erase-account` rechecks the locked user row and becomes a harmless, payload-scrubbed success if the deletion request was cancelled/not yet due after enqueue.
+  - [x] 6.6 CONFIRM RED: Run only the selected test and verify the handler is missing.
+  - [x] 6.7 GREEN: Implement `handlers/erase-account.ts` with transactional row locking, due recheck, and payload scrubbing; no user deletion on stale work.
+  - [x] 6.8 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 6.9 RED (integration): Add one focused test proving a due handler cascade-deletes the user plus sessions, tokens, mailboxes, messages/occurrences, channels/settings, attempts/items; preserves unrelated users and `SET NULL` invite history; and leaves its own queue payload without `userId`.
+  - [x] 6.10 CONFIRM RED: Run only the selected cascade test and verify it fails for missing deletion behavior.
+  - [x] 6.11 GREEN: Perform one user delete relying on existing FK cascades/trigger, then scrub the job payload in the same transaction; do not add bespoke per-table deletion code.
+  - [x] 6.12 CONFIRM GREEN: Run only the selected cascade test and verify it passes.
+  - [x] 6.13 RED (integration): Add one focused worker-loop test proving a claimed `erase_account` job dispatches to the handler and reaches succeeded state without affecting other job types.
+  - [x] 6.14 CONFIRM RED: Run only the selected worker-loop test and verify dispatch is missing.
+  - [x] 6.15 GREEN: Extend queue types and `runWorkerTick` dispatch exhaustively.
+  - [x] 6.16 CONFIRM GREEN: Run only the selected worker-loop test and verify it passes.
+  - [x] 6.17 RED (unit or import-safe test): Add one focused test around an exported interval-registration function (extract only if needed) proving the account-erasure scheduler is registered on `SCHEDULER_INTERVAL_MS` and its failure is caught like other schedulers; do not start a real timer/process in the test.
+  - [x] 6.18 CONFIRM RED: Run only that selected test and verify the registration seam is absent.
+  - [x] 6.19 GREEN: Wire `enqueueDueAccountErasures(db)` into `backend/src/worker.ts` on the existing scheduler interval, with rejection logging and shutdown cleanup; keep module imports side-effect free.
+  - [x] 6.20 CONFIRM GREEN: Run only the selected test and verify it passes.
+  - [x] 6.21 REFACTOR: Ensure the grace-period deadline is rechecked at execution, payload scrubbing cannot prevent worker completion bookkeeping, and reruns/no-row cases remain idempotent; rerun selected erasure tests.
+  - [x] 6.22 CHECK PHASE: Run `pnpm check`.
+
+- [x] 7.0 Build the account-management frontend flows
+  - [x] 7.1 RED (compile-time): Create `frontend/src/lib/feature-16-api.test-d.ts` expressing typed calls/results for `profile.changePassword`, `profile.requestEmailChange`, `profile.confirmEmailChange`, profile deletion status, `privacy.erase`, and `privacy.cancelErase`.
+  - [x] 7.2 CONFIRM RED: Run `pnpm --filter @pigeon/frontend typecheck`; verify it fails on missing clients/contracts.
+  - [x] 7.3 GREEN: Add the minimal typed methods to `frontend/src/lib/api.ts`, importing shared types type-only and preserving `credentials: "include"`/401 behavior. Email confirmation must not require an existing session and should surface typed API errors.
+  - [x] 7.4 CONFIRM GREEN: Run `pnpm --filter @pigeon/frontend typecheck`; verify it passes.
+  - [x] 7.5 GREEN (presentation; no component unit harness by project convention): Refactor `SettingsDialog.tsx` so profile save, password change, and email-change request are independent non-nested forms. Require current/new password inputs, new-email/current-password inputs, disabled/busy states, accessible labels/status messages, clear secret inputs after success, and show that the old email remains active pending confirmation.
+  - [x] 7.6 GREEN (presentation): Add `ConfirmEmailChange.tsx` and `pages/confirm-email.astro`, mirroring the import-safe/query-token pattern of `VerifyEmail.tsx`. Show checking, success, missing-token, invalid/expired, and email-taken states; never render/log the token.
+  - [x] 7.7 GREEN (presentation): Update `PrivacyPanel.tsx` to load deletion status, schedule without redirect/logout, display the exact deletion deadline and paused-service explanation, expose Cancel only before the deadline, and restore the destructive form after cancellation. Keep exact phrase + password confirmation and align copy with actual behavior (remove unimplemented export/audit/billing promises from this feature's active deletion copy).
+  - [x] 7.8 GREEN (presentation): Add only necessary styles to `global.css`, reusing existing card/form/error/button utilities first; preserve keyboard access and visible busy/error states.
+  - [x] 7.9 CONFIRM GREEN: Run `pnpm --filter @pigeon/frontend typecheck` and `pnpm build`; verify the static Astro build and Solid typecheck pass.
+  - [x] 7.10 REFACTOR: Remove duplicated deadline/error mapping from components if a small pure helper is justified; if created, add one focused unit test and run it alone. Otherwise keep presentation local and simple.
+  - [x] 7.11 CHECK PHASE: Run `pnpm check`.
+
+- [x] 8.0 Verify cross-feature behavior and documentation
+  - [x] 8.1 RED (integration): Add one focused end-to-end account lifecycle test proving: request email change → confirm without session → log in with new email → change password while retaining current session/revoking another → request deletion → schedulers stay quiet → cancel before 24h → scheduling resumes. Use `withTestDb()` and fake `MailSender`/connectors; no external network.
+  - [x] 8.2 CONFIRM RED: Run only that selected e2e test and verify any missed integration fails for the expected reason.
+  - [x] 8.3 GREEN: Fix only the cross-module wiring exposed by the test (router mounting, shared response mapping, scheduler ownership joins, or API path consistency).
+  - [x] 8.4 CONFIRM GREEN: Run only the selected lifecycle test and verify it passes.
+  - [x] 8.5 Update `vibes/000-atomic/coding-guidelines.md` module/status notes only if implementation changes an architectural convention; do not rewrite historical feature numbering.
+  - [x] 8.6 Update privacy/account copy so it does not claim unbuilt data export, consent, billing erasure, automatic 90-day retention, or anonymous audit logging as part of this feature.
+  - [x] 8.7 CHECK PHASE: Run `pnpm check`.
+
+- [ ] 9.0 Final validation
+  - [ ] 9.1 Run the repository's complete final gate from `COMMANDS.md`: `pnpm validate` (static checks, all unit tests, all integration/e2e tests, and frontend production build). It must pass.
+  - [ ] 9.2 Review the final diff against every acceptance criterion in `prd-account-management.md`; confirm no session-list/revoke, logout-everywhere, data export/consent, billing cancellation, or audit-log system was added.
+  - [ ] 9.3 Commit message: `feat: add secure account credential changes and cancellable data deletion` — include a one-sentence functional description of password rotation, verified email changes, and 24-hour GDPR erasure.

@@ -24,11 +24,15 @@ async function insertOwner(
     digestDays?: number[];
     timezone?: string;
     baselineAt: Date;
+    deletionRequestedAt?: Date | null;
   },
 ): Promise<Owner> {
   const userRows = await db.query`
-    INSERT INTO users(email, name, password_hash, tier)
-    VALUES (${`${suffix}@example.com`}, 'Heartbeat User', 'hash', 'free')
+    INSERT INTO users(email, name, password_hash, tier, deletion_requested_at)
+    VALUES (
+      ${`${suffix}@example.com`}, 'Heartbeat User', 'hash', 'free',
+      ${options.deletionRequestedAt ?? null}
+    )
     RETURNING id
   `;
   const userId = String(userRows[0]?.id);
@@ -297,53 +301,75 @@ describe("scheduleQuietHeartbeats", () => {
     }
   });
 
-  it("quiet-triggered digest suppresses heartbeat", async () => {
+  it("skips a fully eligible pending-deletion user while still scheduling the equivalent active user's quiet heartbeat", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
       const now = new Date("2026-01-12T10:00:00.000Z");
-      const owner = await insertOwner(db, "heartbeat-triggered-digest", {
+      const deletionRequestedAt = new Date("2026-01-11T09:00:00.000Z");
+      await insertOwner(db, "heartbeat-active-deletion-filter", {
         baselineAt: new Date("2026-01-10T00:00:00.000Z"),
       });
-      const messageRows = await db.query`
-        INSERT INTO messages(
-          user_id, identity_key, from_name, from_address, subject, body,
-          received_at
-        ) VALUES (
-          ${owner.userId}, 'test:heartbeat-triggered-digest', 'Sender',
-          'sender@example.com', 'Subject', 'Body',
-          ${new Date("2026-01-11T11:00:00.000Z")}
-        )
-        RETURNING id
-      `;
-      const triggerMessageId = String(messageRows[0]?.id);
-      await db.query`
-        INSERT INTO delivery_attempts(
-          user_id, channel_id, kind, message_id, scheduled_for, window_start,
-          window_end, status, sent_at
-        ) VALUES (
-          ${owner.userId}, ${owner.channelId}, 'digest', ${triggerMessageId},
-          ${new Date("2026-01-11T12:00:00.000Z")},
-          ${new Date("2026-01-10T00:00:00.000Z")},
-          ${new Date("2026-01-11T12:00:00.000Z")}, 'sent',
-          ${new Date("2026-01-11T12:00:00.000Z")}
-        )
-      `;
+      await insertOwner(db, "heartbeat-pending-deletion-filter", {
+        baselineAt: new Date("2026-01-10T00:00:00.000Z"),
+        deletionRequestedAt,
+      });
 
       await scheduleQuietHeartbeats(db, now);
 
-      const rows = await db.query`
-        SELECT
-          count(DISTINCT da.id)::int AS attempt_count,
-          count(DISTINCT j.id)::int AS job_count
+      const attempts = await db.query`
+        SELECT u.email, u.deletion_requested_at, da.kind, da.scheduled_for
         FROM delivery_attempts da
-        LEFT JOIN jobs j
-          ON da.id::text = j.payload->>'deliveryAttemptId'
-         AND j.type = 'deliver_channel'
-        WHERE da.user_id = ${owner.userId}
-          AND da.kind = 'heartbeat'
+        JOIN users u ON u.id = da.user_id
+        WHERE da.kind = 'heartbeat'
+        ORDER BY u.email
       `;
-      expect(rows).toEqual([{ attempt_count: 0, job_count: 0 }]);
+      const jobs = await db.query`
+        SELECT u.email, j.type, j.status
+        FROM jobs j
+        JOIN delivery_attempts da
+          ON da.id::text = j.payload->>'deliveryAttemptId'
+        JOIN users u ON u.id = da.user_id
+        WHERE da.kind = 'heartbeat'
+        ORDER BY u.email
+      `;
+      const users = await db.query`
+        SELECT email, deletion_requested_at
+        FROM users
+        WHERE email IN (
+          'heartbeat-active-deletion-filter@example.com',
+          'heartbeat-pending-deletion-filter@example.com'
+        )
+        ORDER BY email
+      `;
+
+      expect({ attempts, jobs, users }).toEqual({
+        attempts: [
+          {
+            email: "heartbeat-active-deletion-filter@example.com",
+            deletion_requested_at: null,
+            kind: "heartbeat",
+            scheduled_for: new Date("2026-01-12T08:00:00.000Z"),
+          },
+        ],
+        jobs: [
+          {
+            email: "heartbeat-active-deletion-filter@example.com",
+            type: "deliver_channel",
+            status: "pending",
+          },
+        ],
+        users: [
+          {
+            email: "heartbeat-active-deletion-filter@example.com",
+            deletion_requested_at: null,
+          },
+          {
+            email: "heartbeat-pending-deletion-filter@example.com",
+            deletion_requested_at: deletionRequestedAt,
+          },
+        ],
+      });
     } finally {
       await close();
     }

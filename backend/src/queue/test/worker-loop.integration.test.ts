@@ -427,4 +427,94 @@ describe("runWorkerTick", () => {
       await close();
     }
   });
+
+  it("claims and dispatches erase_account while leaving an unrelated user and other job type untouched", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const dueUserId = await insertUser(db, "worker-erase@example.com");
+      await db.query`
+        UPDATE users
+        SET deletion_requested_at = now() - interval '25 hours'
+        WHERE id = ${dueUserId}
+      `;
+
+      const unrelatedUserId = await insertUser(
+        db,
+        "worker-erase-control@example.com",
+      );
+      const unrelatedMailboxId = await insertMailbox(
+        db,
+        vault,
+        unrelatedUserId,
+        "worker-erase-control-mailbox@example.com",
+      );
+      await enqueueSyncJob(db, unrelatedMailboxId);
+      const syncJobRows = await db.query`
+        SELECT id
+        FROM jobs
+        WHERE type = 'sync_mailbox'
+          AND payload->>'mailboxId' = ${unrelatedMailboxId}
+      `;
+      const syncJobId = String(syncJobRows[0]?.id);
+
+      const eraseJobRows = await db.query`
+        INSERT INTO jobs(type, payload, status, run_at)
+        VALUES (
+          'erase_account',
+          ${{ userId: dueUserId }},
+          'pending',
+          now() - interval '1 minute'
+        )
+        RETURNING id
+      `;
+      const eraseJobId = String(eraseJobRows[0]?.id);
+
+      await runWorkerTick(
+        db,
+        vault,
+        1,
+        () => createFakeConnector(),
+        createFakeClassifier(),
+      );
+
+      const state = await db.query`
+        SELECT
+          NOT EXISTS (
+            SELECT 1 FROM users WHERE id = ${dueUserId}
+          ) AS due_user_deleted,
+          EXISTS (
+            SELECT 1 FROM users WHERE id = ${unrelatedUserId}
+          ) AS unrelated_user_exists,
+          erase.status AS erase_job_status,
+          erase.attempts AS erase_job_attempts,
+          erase.payload AS erase_job_payload,
+          other_job.type AS other_job_type,
+          other_job.status AS other_job_status,
+          other_job.attempts AS other_job_attempts,
+          other_job.payload AS other_job_payload
+        FROM jobs erase
+        CROSS JOIN jobs other_job
+        WHERE erase.id = ${eraseJobId}
+          AND other_job.id = ${syncJobId}
+      `;
+
+      expect(state).toEqual([
+        {
+          due_user_deleted: true,
+          unrelated_user_exists: true,
+          erase_job_status: "succeeded",
+          erase_job_attempts: 1,
+          erase_job_payload: {},
+          other_job_type: "sync_mailbox",
+          other_job_status: "pending",
+          other_job_attempts: 0,
+          other_job_payload: { mailboxId: unrelatedMailboxId },
+        },
+      ]);
+    } finally {
+      await close();
+    }
+  });
 });

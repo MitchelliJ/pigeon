@@ -7,7 +7,10 @@
 import { describe, expect, it } from "vitest";
 import { withTestDb } from "../../../test/db";
 import { runMigrations } from "../../migrate/runner";
-import { scheduleDailyDigests } from "../scheduler";
+import {
+  scheduleDailyDigests,
+  scheduleQuietTriggeredDigests,
+} from "../scheduler";
 import type { Db } from "../../db/index";
 
 type DeliveryMode = "daily" | "quiet";
@@ -25,10 +28,17 @@ interface SeededEmail {
   summary: string;
 }
 
-async function insertUser(db: Db, suffix: string): Promise<string> {
+async function insertUser(
+  db: Db,
+  suffix: string,
+  deletionRequestedAt?: Date | null,
+): Promise<string> {
   const rows = await db.query`
-    INSERT INTO users(email, name, password_hash, tier)
-    VALUES (${`${suffix}@example.com`}, 'Digest User', 'hash', 'free')
+    INSERT INTO users(email, name, password_hash, tier, deletion_requested_at)
+    VALUES (
+      ${`${suffix}@example.com`}, 'Digest User', 'hash', 'free',
+      ${deletionRequestedAt ?? null}
+    )
     RETURNING id
   `;
   return String(rows[0]?.id);
@@ -45,9 +55,10 @@ async function insertDeliveryOwner(
     cutoffAt?: Date | null;
     channelStatus?: ChannelStatus | null;
     timezone?: string;
+    deletionRequestedAt?: Date | null;
   },
 ): Promise<DeliveryOwner> {
-  const userId = await insertUser(db, suffix);
+  const userId = await insertUser(db, suffix, options.deletionRequestedAt);
   let channelId: string | null = null;
 
   if (options.channelStatus !== null) {
@@ -236,6 +247,68 @@ describe("scheduleDailyDigests", () => {
     }
   });
 
+  it("skips a fully eligible pending-deletion user while still scheduling the equivalent active user's daily digest", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const now = new Date("2026-01-12T10:30:00.000Z");
+      const baselineAt = new Date("2026-01-08T12:00:00.000Z");
+      const deletionRequestedAt = new Date("2026-01-11T09:00:00.000Z");
+      await insertDeliveryOwner(db, "digest-active-deletion-filter", {
+        mode: "daily",
+        digestTime: "08:00",
+        digestDays: [1, 2, 3, 4, 5, 6, 7],
+        baselineAt,
+      });
+      await insertDeliveryOwner(db, "digest-pending-deletion-filter", {
+        mode: "daily",
+        digestTime: "08:00",
+        digestDays: [1, 2, 3, 4, 5, 6, 7],
+        baselineAt,
+        deletionRequestedAt,
+      });
+
+      await scheduleDailyDigests(db, now);
+
+      const attempts = await db.query`
+        SELECT u.email, u.deletion_requested_at, da.kind, da.scheduled_for
+        FROM delivery_attempts da
+        JOIN users u ON u.id = da.user_id
+        WHERE da.kind = 'digest'
+        ORDER BY u.email
+      `;
+      const jobs = await db.query`
+        SELECT u.email, j.type, j.status
+        FROM jobs j
+        JOIN delivery_attempts da
+          ON da.id::text = j.payload->>'deliveryAttemptId'
+        JOIN users u ON u.id = da.user_id
+        WHERE j.type = 'deliver_channel'
+        ORDER BY u.email
+      `;
+
+      expect({ attempts, jobs }).toEqual({
+        attempts: [
+          {
+            email: "digest-active-deletion-filter@example.com",
+            deletion_requested_at: null,
+            kind: "digest",
+            scheduled_for: new Date("2026-01-12T08:00:00.000Z"),
+          },
+        ],
+        jobs: [
+          {
+            email: "digest-active-deletion-filter@example.com",
+            type: "deliver_channel",
+            status: "pending",
+          },
+        ],
+      });
+    } finally {
+      await close();
+    }
+  });
+
   it("schedules Amsterdam wall-clock time with winter and summer DST offsets", async () => {
     const { db, close } = await withTestDb();
     try {
@@ -279,6 +352,95 @@ describe("scheduleDailyDigests", () => {
           scheduled_for: new Date("2026-01-12T07:00:00.000Z"),
         },
       ]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("skips a fully eligible pending-deletion user while still scheduling the equivalent active user's quiet-triggered digest", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const now = new Date("2026-01-14T08:05:00.000Z");
+      const baselineAt = new Date("2026-01-10T00:00:00.000Z");
+      const classifiedAt = new Date("2026-01-14T08:00:00.000Z");
+      const deletionRequestedAt = new Date("2026-01-13T09:00:00.000Z");
+      const active = await insertDeliveryOwner(
+        db,
+        "quiet-active-deletion-filter",
+        {
+          mode: "quiet",
+          digestTime: "08:00",
+          digestDays: [1, 2, 3, 4, 5, 6, 7],
+          baselineAt,
+        },
+      );
+      const pendingDeletion = await insertDeliveryOwner(
+        db,
+        "quiet-pending-deletion-filter",
+        {
+          mode: "quiet",
+          digestTime: "08:00",
+          digestDays: [1, 2, 3, 4, 5, 6, 7],
+          baselineAt,
+          deletionRequestedAt,
+        },
+      );
+      const activeMailboxId = await insertMailbox(db, active.userId);
+      const pendingDeletionMailboxId = await insertMailbox(
+        db,
+        pendingDeletion.userId,
+      );
+      await insertClassifiedEmail(db, activeMailboxId, {
+        summary: "active trigger",
+        category: "requires_action",
+        receivedAt: new Date("2026-01-14T07:55:00.000Z"),
+        classifiedAt,
+      });
+      await insertClassifiedEmail(db, pendingDeletionMailboxId, {
+        summary: "pending deletion trigger",
+        category: "requires_action",
+        receivedAt: new Date("2026-01-14T07:55:00.000Z"),
+        classifiedAt,
+      });
+
+      await scheduleQuietTriggeredDigests(db, now);
+
+      const attempts = await db.query`
+        SELECT u.email, u.deletion_requested_at, da.kind, da.message_id, da.scheduled_for
+        FROM delivery_attempts da
+        JOIN users u ON u.id = da.user_id
+        WHERE da.kind = 'digest'
+        ORDER BY u.email
+      `;
+      const jobs = await db.query`
+        SELECT u.email, j.type, j.status
+        FROM jobs j
+        JOIN delivery_attempts da
+          ON da.id::text = j.payload->>'deliveryAttemptId'
+        JOIN users u ON u.id = da.user_id
+        WHERE j.type = 'deliver_channel'
+        ORDER BY u.email
+      `;
+
+      expect({ attempts, jobs }).toEqual({
+        attempts: [
+          {
+            email: "quiet-active-deletion-filter@example.com",
+            deletion_requested_at: null,
+            kind: "digest",
+            message_id: expect.any(String),
+            scheduled_for: now,
+          },
+        ],
+        jobs: [
+          {
+            email: "quiet-active-deletion-filter@example.com",
+            type: "deliver_channel",
+            status: "pending",
+          },
+        ],
+      });
     } finally {
       await close();
     }

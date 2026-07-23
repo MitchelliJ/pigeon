@@ -232,6 +232,62 @@ describe("migration 0006 — jobs schema", () => {
     }
   });
 
+  it("accepts erase_account jobs and only blocks concurrent in-flight duplicates for the same userId", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const userId = await insertUser(db, "eraseaccountowner@example.com");
+
+      await expect(
+        db.query`
+          INSERT INTO jobs(type, payload)
+          VALUES (${"erase_account"}, ${{ userId }})`,
+      ).resolves.toBeDefined();
+
+      await expect(
+        db.query`
+          INSERT INTO jobs(type, payload)
+          VALUES (${"erase_account"}, ${{ userId }})`,
+      ).rejects.toThrow();
+
+      await db.query`
+        UPDATE jobs SET status = ${"running"}
+        WHERE type = ${"erase_account"}
+          AND payload->>'userId' = ${userId}`;
+
+      await expect(
+        db.query`
+          INSERT INTO jobs(type, payload)
+          VALUES (${"erase_account"}, ${{ userId }})`,
+      ).rejects.toThrow();
+
+      await db.query`
+        UPDATE jobs SET status = ${"failed"}
+        WHERE type = ${"erase_account"}
+          AND payload->>'userId' = ${userId}`;
+
+      await expect(
+        db.query`
+          INSERT INTO jobs(type, payload)
+          VALUES (${"erase_account"}, ${{ userId }})`,
+      ).resolves.toBeDefined();
+
+      await db.query`
+        UPDATE jobs SET status = ${"succeeded"}
+        WHERE type = ${"erase_account"}
+          AND status = ${"pending"}
+          AND payload->>'userId' = ${userId}`;
+
+      await expect(
+        db.query`
+          INSERT INTO jobs(type, payload)
+          VALUES (${"erase_account"}, ${{ userId }})`,
+      ).resolves.toBeDefined();
+    } finally {
+      await close();
+    }
+  });
+
   it("has a unique index enforcing at most one in-flight sync_mailbox job per mailbox", async () => {
     const { db, close } = await withTestDb();
     try {

@@ -25,10 +25,25 @@ export default function SettingsDialog(props: {
   const notifications = useNotifications();
   const [name, setName] = createSignal(untrack(() => props.user.name));
   const [timezone, setTimezone] = createSignal(untrack(() => props.timezone));
-  const [isSaving, setIsSaving] = createSignal(false);
-  const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
+  const [profileBusy, setProfileBusy] = createSignal(false);
+  const [profileError, setProfileError] = createSignal<string | null>(null);
+  const [profileSuccess, setProfileSuccess] = createSignal<string | null>(null);
+  const [currentPassword, setCurrentPassword] = createSignal("");
+  const [newPassword, setNewPassword] = createSignal("");
+  const [passwordBusy, setPasswordBusy] = createSignal(false);
+  const [passwordError, setPasswordError] = createSignal<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = createSignal<string | null>(
+    null,
+  );
+  const [newEmail, setNewEmail] = createSignal("");
+  const [emailPassword, setEmailPassword] = createSignal("");
+  const [emailBusy, setEmailBusy] = createSignal(false);
+  const [emailError, setEmailError] = createSignal<string | null>(null);
+  const [emailSuccess, setEmailSuccess] = createSignal<string | null>(null);
   let dialog: HTMLDivElement | undefined;
   let nameInput: HTMLInputElement | undefined;
+
+  const isBusy = () => profileBusy() || passwordBusy() || emailBusy();
 
   createEffect(
     on(
@@ -37,7 +52,16 @@ export default function SettingsDialog(props: {
         if (!open || wasOpen) return;
         setName(props.user.name);
         setTimezone(props.timezone);
-        setErrorMessage(null);
+        setProfileError(null);
+        setProfileSuccess(null);
+        setCurrentPassword("");
+        setNewPassword("");
+        setPasswordError(null);
+        setPasswordSuccess(null);
+        setNewEmail("");
+        setEmailPassword("");
+        setEmailError(null);
+        setEmailSuccess(null);
         queueMicrotask(() => nameInput?.focus());
       },
     ),
@@ -53,7 +77,7 @@ export default function SettingsDialog(props: {
   });
 
   function close(): void {
-    if (!isSaving()) props.onClose();
+    if (!isBusy()) props.onClose();
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
@@ -82,13 +106,18 @@ export default function SettingsDialog(props: {
     }
   }
 
-  async function save(event: Event): Promise<void> {
+  function getErrorMessage(error: unknown, fallback: string): string {
+    return error instanceof ApiError ? error.message : fallback;
+  }
+
+  async function saveProfile(event: Event): Promise<void> {
     event.preventDefault();
     const trimmedName = name().trim();
-    if (trimmedName.length === 0 || isSaving()) return;
+    if (trimmedName.length === 0 || profileBusy()) return;
 
-    setIsSaving(true);
-    setErrorMessage(null);
+    setProfileBusy(true);
+    setProfileError(null);
+    setProfileSuccess(null);
     try {
       const [updatedProfile, updatedDelivery] = await Promise.all([
         profile.update({ name: trimmedName }),
@@ -98,21 +127,90 @@ export default function SettingsDialog(props: {
         name: updatedProfile.name,
         timezone: updatedDelivery.settings.timezone,
       });
+      setProfileSuccess("Settings saved.");
       notifications.success("Settings saved.");
-      props.onClose();
     } catch (error) {
-      const message =
-        error instanceof ApiError
-          ? error.message
-          : "Could not save your settings. Please try again.";
-      setErrorMessage(message);
+      setProfileError(
+        getErrorMessage(
+          error,
+          "Could not save your settings. Please try again.",
+        ),
+      );
     } finally {
-      setIsSaving(false);
+      setProfileBusy(false);
     }
   }
 
-  const hasChanges = () =>
-    name().trim() !== props.user.name || timezone() !== props.timezone;
+  async function savePassword(event: Event): Promise<void> {
+    event.preventDefault();
+    if (
+      passwordBusy() ||
+      currentPassword().length === 0 ||
+      newPassword().length === 0
+    ) {
+      return;
+    }
+
+    setPasswordBusy(true);
+    setPasswordError(null);
+    setPasswordSuccess(null);
+    try {
+      await profile.changePassword({
+        currentPassword: currentPassword(),
+        newPassword: newPassword(),
+      });
+      setCurrentPassword("");
+      setNewPassword("");
+      setPasswordSuccess("Password updated.");
+      notifications.success("Password updated.");
+    } catch (error) {
+      setPasswordError(
+        getErrorMessage(
+          error,
+          "Could not update your password. Please try again.",
+        ),
+      );
+    } finally {
+      setPasswordBusy(false);
+    }
+  }
+
+  async function saveEmailChange(event: Event): Promise<void> {
+    event.preventDefault();
+    const requestedEmail = newEmail().trim();
+    if (
+      emailBusy() ||
+      requestedEmail.length === 0 ||
+      emailPassword().length === 0
+    ) {
+      return;
+    }
+
+    setEmailBusy(true);
+    setEmailError(null);
+    setEmailSuccess(null);
+    try {
+      await profile.requestEmailChange({
+        newEmail: requestedEmail,
+        currentPassword: emailPassword(),
+      });
+      setNewEmail(requestedEmail);
+      setEmailPassword("");
+      setEmailSuccess(
+        `A confirmation link was sent to ${requestedEmail}. ${props.user.email} remains active until you confirm the change.`,
+      );
+      notifications.success("Confirmation link sent.");
+    } catch (error) {
+      setEmailError(
+        getErrorMessage(
+          error,
+          "Could not start your email change. Please try again.",
+        ),
+      );
+    } finally {
+      setEmailBusy(false);
+    }
+  }
 
   return (
     <Show when={props.open}>
@@ -124,7 +222,7 @@ export default function SettingsDialog(props: {
             role="dialog"
             aria-modal="true"
             aria-labelledby="settings-dialog-title"
-            aria-busy={isSaving()}
+            aria-busy={isBusy()}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={handleKeyDown}
           >
@@ -139,14 +237,14 @@ export default function SettingsDialog(props: {
                 type="button"
                 class="icon-btn"
                 aria-label="Close settings"
-                disabled={isSaving()}
+                disabled={isBusy()}
                 onClick={close}
               >
                 <CloseIcon />
               </button>
             </div>
 
-            <form class="modal-form" onSubmit={save}>
+            <form class="modal-form" onSubmit={saveProfile}>
               <section class="settings-section" aria-labelledby="account-title">
                 <div>
                   <h3 id="account-title" class="settings-section-title">
@@ -166,18 +264,19 @@ export default function SettingsDialog(props: {
                     value={name()}
                     maxlength={100}
                     required
-                    disabled={isSaving()}
+                    disabled={profileBusy()}
                     onInput={(event) => setName(event.currentTarget.value)}
                   />
                 </div>
 
                 <div class="field">
                   <label class="field-label" for="settings-email">
-                    Email
+                    Current email
                   </label>
                   <input
                     id="settings-email"
                     class="input"
+                    type="email"
                     value={props.user.email}
                     readOnly
                   />
@@ -203,7 +302,7 @@ export default function SettingsDialog(props: {
                     id="settings-timezone"
                     class="select"
                     value={timezone()}
-                    disabled={isSaving()}
+                    disabled={profileBusy()}
                     onInput={(event) => setTimezone(event.currentTarget.value)}
                   >
                     <For each={timezoneOptions(props.timezone)}>
@@ -217,7 +316,7 @@ export default function SettingsDialog(props: {
                 </div>
               </section>
 
-              <Show when={errorMessage()}>
+              <Show when={profileError()}>
                 {(message) => (
                   <p class="auth-error" role="alert">
                     {message()}
@@ -225,26 +324,195 @@ export default function SettingsDialog(props: {
                 )}
               </Show>
 
+              <Show when={profileSuccess()}>
+                {(message) => (
+                  <p class="hint" role="status">
+                    {message()}
+                  </p>
+                )}
+              </Show>
+
               <div class="modal-actions settings-actions">
                 <button
-                  type="button"
-                  class="btn"
-                  disabled={isSaving()}
-                  onClick={close}
+                  type="submit"
+                  class="btn btn-primary"
+                  disabled={profileBusy() || name().trim().length === 0}
                 >
-                  Cancel
+                  {profileBusy() ? "Saving…" : "Save settings"}
                 </button>
+              </div>
+            </form>
+
+            <form class="modal-form" onSubmit={savePassword}>
+              <section
+                class="settings-section"
+                aria-labelledby="password-title"
+              >
+                <div>
+                  <h3 id="password-title" class="settings-section-title">
+                    Password
+                  </h3>
+                  <p class="hint">Change your password for future sign-ins.</p>
+                </div>
+
+                <div class="field">
+                  <label class="field-label" for="settings-current-password">
+                    Current password
+                  </label>
+                  <input
+                    id="settings-current-password"
+                    class="input"
+                    type="password"
+                    value={currentPassword()}
+                    autocomplete="current-password"
+                    required
+                    disabled={passwordBusy()}
+                    onInput={(event) =>
+                      setCurrentPassword(event.currentTarget.value)
+                    }
+                  />
+                </div>
+
+                <div class="field">
+                  <label class="field-label" for="settings-new-password">
+                    New password
+                  </label>
+                  <input
+                    id="settings-new-password"
+                    class="input"
+                    type="password"
+                    value={newPassword()}
+                    autocomplete="new-password"
+                    required
+                    disabled={passwordBusy()}
+                    onInput={(event) =>
+                      setNewPassword(event.currentTarget.value)
+                    }
+                  />
+                </div>
+              </section>
+
+              <Show when={passwordError()}>
+                {(message) => (
+                  <p class="auth-error" role="alert">
+                    {message()}
+                  </p>
+                )}
+              </Show>
+
+              <Show when={passwordSuccess()}>
+                {(message) => (
+                  <p class="hint" role="status">
+                    {message()}
+                  </p>
+                )}
+              </Show>
+
+              <div class="modal-actions settings-actions">
                 <button
                   type="submit"
                   class="btn btn-primary"
                   disabled={
-                    isSaving() || name().trim().length === 0 || !hasChanges()
+                    passwordBusy() ||
+                    currentPassword().length === 0 ||
+                    newPassword().length === 0
                   }
                 >
-                  {isSaving() ? "Saving…" : "Save settings"}
+                  {passwordBusy() ? "Saving…" : "Update password"}
                 </button>
               </div>
             </form>
+
+            <form class="modal-form" onSubmit={saveEmailChange}>
+              <section
+                class="settings-section"
+                aria-labelledby="email-change-title"
+              >
+                <div>
+                  <h3 id="email-change-title" class="settings-section-title">
+                    Change email
+                  </h3>
+                  <p class="hint">
+                    Send a confirmation link to a new email address.
+                  </p>
+                </div>
+
+                <div class="field">
+                  <label class="field-label" for="settings-new-email">
+                    New email
+                  </label>
+                  <input
+                    id="settings-new-email"
+                    class="input"
+                    type="email"
+                    value={newEmail()}
+                    autocomplete="email"
+                    required
+                    disabled={emailBusy()}
+                    onInput={(event) => setNewEmail(event.currentTarget.value)}
+                  />
+                </div>
+
+                <div class="field">
+                  <label class="field-label" for="settings-email-password">
+                    Current password
+                  </label>
+                  <input
+                    id="settings-email-password"
+                    class="input"
+                    type="password"
+                    value={emailPassword()}
+                    autocomplete="current-password"
+                    required
+                    disabled={emailBusy()}
+                    onInput={(event) =>
+                      setEmailPassword(event.currentTarget.value)
+                    }
+                  />
+                </div>
+              </section>
+
+              <Show when={emailError()}>
+                {(message) => (
+                  <p class="auth-error" role="alert">
+                    {message()}
+                  </p>
+                )}
+              </Show>
+
+              <Show when={emailSuccess()}>
+                {(message) => (
+                  <p class="hint" role="status">
+                    {message()}
+                  </p>
+                )}
+              </Show>
+
+              <div class="modal-actions settings-actions">
+                <button
+                  type="submit"
+                  class="btn btn-primary"
+                  disabled={
+                    emailBusy() ||
+                    newEmail().trim().length === 0 ||
+                    emailPassword().length === 0
+                  }
+                >
+                  {emailBusy() ? "Saving…" : "Change email"}
+                </button>
+              </div>
+            </form>
+
+            <div class="modal-actions settings-actions">
+              <button
+                type="button"
+                class="btn"
+                disabled={isBusy()}
+                onClick={close}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       </Portal>

@@ -166,6 +166,60 @@ export interface ResetPasswordInput {
   newPassword: string;
 }
 
+/** Body for changing the signed-in user's password. */
+export interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+}
+
+/** Body for starting an email-address change. */
+export interface RequestEmailChangeInput {
+  currentPassword: string;
+  newEmail: string;
+}
+
+/** Body for confirming an email-address change token. */
+export interface ConfirmEmailChangeInput {
+  token: string;
+}
+
+/** Authenticated profile/settings data, including scheduled deletion state. */
+export interface ProfileSettings {
+  name: string;
+  email: string;
+  tier: PlanTier;
+  /** ISO timestamp strings, or null when account deletion is not scheduled. */
+  deletionRequestedAt: string | null;
+  deletesAt: string | null;
+}
+
+/** Body for scheduling account deletion after explicit confirmation. */
+export interface RequestAccountDeletionInput {
+  password: string;
+  confirm: "delete my account";
+}
+
+/** Shared account-deletion schedule fields reused across auth responses. */
+interface AccountDeletionSchedule<TTimestamp extends string | null> {
+  /** ISO timestamp string for when deletion was requested. */
+  requestedAt: TTimestamp;
+  /** ISO timestamp string for when deletion will run. */
+  deletesAt: TTimestamp;
+}
+
+/** Scheduled account deletion timestamps, null when no deletion is pending. */
+export type AccountDeletionStatus = AccountDeletionSchedule<string | null>;
+
+/** Successful account deletion request response. */
+export interface RequestAccountDeletionResult extends AccountDeletionSchedule<string> {
+  ok: true;
+}
+
+/** Successful account deletion cancellation response. */
+export interface CancelAccountDeletionResult {
+  ok: true;
+}
+
 /** Dashboard feedback phase while import or summarization work is pending. */
 export type OnboardingPhase = "importing" | "summarizing" | "error" | "ready";
 

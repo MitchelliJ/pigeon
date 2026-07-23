@@ -88,6 +88,69 @@ describe("migration 0003 — users/sessions/auth_tokens/invites schema", () => {
     }
   });
 
+  it("supports account-management user state and change-email tokens", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const rows = await db.query`
+        SELECT a.attname AS column_name,
+               format_type(a.atttypid, a.atttypmod) AS data_type,
+               NOT a.attnotnull AS is_nullable
+        FROM pg_attribute AS a
+        JOIN pg_class AS c ON c.oid = a.attrelid
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = 'users'
+          AND a.attname IN ('pending_email', 'deletion_requested_at')
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+        ORDER BY a.attname`;
+      expect(rows).toEqual([
+        {
+          column_name: "deletion_requested_at",
+          data_type: "timestamp with time zone",
+          is_nullable: true,
+        },
+        {
+          column_name: "pending_email",
+          data_type: "citext",
+          is_nullable: true,
+        },
+      ]);
+
+      const inserted =
+        await db.query`INSERT INTO users(email, name, password_hash) VALUES (${"owner@example.com"}, ${"Owner"}, ${"h"}) RETURNING id`;
+      const id = inserted[0]?.id;
+
+      await db.query`
+        UPDATE users
+        SET pending_email = ${"Mixed.Case+next@example.com"},
+            deletion_requested_at = now()
+        WHERE id = ${id}`;
+      const updated = await db.query`
+        SELECT pending_email = ${"mixed.case+next@example.com"} AS pending_email_matches,
+               deletion_requested_at IS NOT NULL AS deletion_requested
+        FROM users
+        WHERE id = ${id}`;
+      expect(updated).toEqual([
+        { pending_email_matches: true, deletion_requested: true },
+      ]);
+
+      await db.query`
+        INSERT INTO auth_tokens(user_id, kind, token_hash, expires_at)
+        VALUES (${id}, ${"change_email"}, ${"change-email-token"}, now() + interval '1 day')`;
+      const tokenRows =
+        await db.query`SELECT kind FROM auth_tokens WHERE token_hash = ${"change-email-token"}`;
+      expect(tokenRows).toEqual([{ kind: "change_email" }]);
+
+      await expect(
+        db.query`INSERT INTO auth_tokens(user_id, kind, token_hash, expires_at) VALUES (${id}, ${"totally_unknown"}, ${"unknown-token"}, now() + interval '1 day')`,
+      ).rejects.toThrow();
+    } finally {
+      await close();
+    }
+  });
+
   it("invites.code_hash is UNIQUE", async () => {
     const { db, close } = await withTestDb();
     try {

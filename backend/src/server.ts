@@ -75,7 +75,7 @@ export function createApp(
   app.route("/", dashboardRoutes(db));
   app.route("/", emailsRoutes(db));
   app.route("/", oauthRoutes(db));
-  app.route("/", profileRoutes(db));
+  app.route("/", profileRoutes(db, mail));
   app.route("/", channelRoutes(db, channelRegistry, vault));
 
   return app;

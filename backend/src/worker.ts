@@ -23,6 +23,7 @@ import { createChannelRegistry } from "./channels/registry";
 import {
   runSchedulerTick,
   enqueueDueClassifyJobs,
+  enqueueDueAccountErasures,
   scheduleQuietTriggeredDigests,
   scheduleDailyDigests,
   scheduleQuietHeartbeats,
@@ -30,7 +31,39 @@ import {
 import { runWorkerTick } from "./queue/worker-loop";
 import { loadDotEnv } from "./env";
 
+interface AccountErasureSchedulerDependencies {
+  setInterval?: (
+    callback: () => void | Promise<void>,
+    delay: number,
+  ) => ReturnType<typeof setInterval>;
+  enqueueDueAccountErasures?: typeof enqueueDueAccountErasures;
+  logError?: (message: string) => void;
+}
+
 const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+
+export function registerAccountErasureScheduler(
+  db: Db,
+  intervalMs: number,
+  dependencies: AccountErasureSchedulerDependencies = {},
+): ReturnType<typeof setInterval> {
+  const {
+    setInterval: scheduleInterval = globalThis.setInterval,
+    enqueueDueAccountErasures:
+      scheduleAccountErasures = enqueueDueAccountErasures,
+    logError = (message: string) => {
+      console.error(message);
+    },
+  } = dependencies;
+
+  return scheduleInterval(
+    () =>
+      scheduleAccountErasures(db).catch(() => {
+        logError("[scheduler] account erasure tick failed");
+      }),
+    intervalMs,
+  );
+}
 
 if (isMain) {
   loadDotEnv(); // fills process.env from the repo-root .env, if present
@@ -69,6 +102,11 @@ if (isMain) {
     });
   }, config.SCHEDULER_INTERVAL_MS);
 
+  const accountErasureSchedulerTimer = registerAccountErasureScheduler(
+    db,
+    config.SCHEDULER_INTERVAL_MS,
+  );
+
   const workerTimer = setInterval(() => {
     void runWorkerTick(
       db,
@@ -88,6 +126,7 @@ if (isMain) {
     clearInterval(timer);
     clearInterval(schedulerTimer);
     clearInterval(classifySchedulerTimer);
+    clearInterval(accountErasureSchedulerTimer);
     clearInterval(workerTimer);
     void db.close().finally(() => process.exit(0));
   };

@@ -27,10 +27,11 @@ async function insertUser(
   db: Db,
   email: string,
   tier: string,
+  deletionRequestedAt?: Date | null,
 ): Promise<string> {
   const rows = await db.query`
-    INSERT INTO users(email, name, password_hash, tier)
-    VALUES (${email}, ${"U"}, ${"h"}, ${tier})
+    INSERT INTO users(email, name, password_hash, tier, deletion_requested_at)
+    VALUES (${email}, ${"U"}, ${"h"}, ${tier}, ${deletionRequestedAt ?? null})
     RETURNING id`;
   return String(rows[0]?.id);
 }
@@ -232,6 +233,65 @@ describe("scheduler", () => {
     }
   });
 
+  it("does not enqueue sync work for a due mailbox owned by a pending-deletion user while still enqueueing the equivalent active-user mailbox", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const rows0 = await db.query`SELECT now() - interval '31 minutes' AS ts`;
+      const lastSyncedAt = new Date(rows0[0]?.ts as string);
+      const deletionRequestedAt = new Date("2026-01-15T12:00:00Z");
+      const activeUserId = await insertUser(
+        db,
+        "sched-active@example.com",
+        "free",
+      );
+      const pendingDeletionUserId = await insertUser(
+        db,
+        "sched-pending-deletion@example.com",
+        "free",
+        deletionRequestedAt,
+      );
+      const activeMailboxId = await insertMailbox(
+        db,
+        activeUserId,
+        "sched-shared-mb-active@example.com",
+        lastSyncedAt,
+      );
+      await insertMailbox(
+        db,
+        pendingDeletionUserId,
+        "sched-shared-mb-pending-deletion@example.com",
+        lastSyncedAt,
+      );
+
+      await runSchedulerTick(db);
+
+      const rows = await db.query`
+        SELECT
+          j.type,
+          j.status,
+          j.payload->>'mailboxId' AS mailbox_id,
+          m.user_id,
+          u.deletion_requested_at
+        FROM jobs j
+        JOIN mailboxes m ON m.id::text = j.payload->>'mailboxId'
+        JOIN users u ON u.id = m.user_id
+        WHERE j.type = 'sync_mailbox'
+        ORDER BY mailbox_id`;
+      expect(rows).toEqual([
+        {
+          type: "sync_mailbox",
+          status: "pending",
+          mailbox_id: activeMailboxId,
+          user_id: activeUserId,
+          deletion_requested_at: null,
+        },
+      ]);
+    } finally {
+      await close();
+    }
+  });
+
   it("does not double-enqueue a due mailbox that already has a pending sync_mailbox job", async () => {
     const { db, close } = await withTestDb();
     try {
@@ -257,24 +317,62 @@ describe("scheduler", () => {
     }
   });
 
-  it("enqueues a pending summarize_classify job for an email whose summary IS NULL", async () => {
+  it("excludes an otherwise eligible unclassified message for a pending-deletion user while still enqueueing the equivalent active-user message", async () => {
     const { db, close } = await withTestDb();
     try {
       await runMigrations(db);
-      const userId = await insertUser(db, "classify-due@example.com", "free");
-      const mailboxId = await insertMailbox(
+      const deletionRequestedAt = new Date("2026-01-15T12:00:00Z");
+      const activeUserId = await insertUser(
         db,
-        userId,
-        "classify-due-mb@example.com",
+        "classify-active@example.com",
+        "free",
+      );
+      const pendingDeletionUserId = await insertUser(
+        db,
+        "classify-pending-deletion@example.com",
+        "free",
+        deletionRequestedAt,
+      );
+      const activeMailboxId = await insertMailbox(
+        db,
+        activeUserId,
+        "classify-active-mb@example.com",
         null,
       );
-      const emailId = await insertEmail(db, mailboxId);
+      const pendingDeletionMailboxId = await insertMailbox(
+        db,
+        pendingDeletionUserId,
+        "classify-pending-deletion-mb@example.com",
+        null,
+      );
+      const activeEmailId = await insertEmail(db, activeMailboxId);
+      await insertEmail(db, pendingDeletionMailboxId);
 
       await enqueueDueClassifyJobs(db);
 
       const rows = await db.query`
-        SELECT status, type FROM jobs WHERE payload->>'messageId' = ${emailId}`;
-      expect(rows).toEqual([{ status: "pending", type: "summarize_classify" }]);
+        SELECT
+          j.type,
+          j.status,
+          j.payload,
+          m.user_id,
+          u.deletion_requested_at,
+          count(*) OVER ()::int AS total_count
+        FROM jobs j
+        JOIN messages m ON m.id::text = j.payload->>'messageId'
+        JOIN users u ON u.id = m.user_id
+        WHERE j.type = 'summarize_classify'
+        ORDER BY m.id`;
+      expect(rows).toEqual([
+        {
+          type: "summarize_classify",
+          status: "pending",
+          payload: { messageId: activeEmailId },
+          user_id: activeUserId,
+          deletion_requested_at: null,
+          total_count: 1,
+        },
+      ]);
     } finally {
       await close();
     }

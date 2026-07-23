@@ -5,14 +5,21 @@
  */
 import { WEEKDAYS } from "@pigeon/shared";
 import type {
+  CancelAccountDeletionResult,
   Category,
+  ChangePasswordInput,
   Channel,
   ChannelKind,
+  ConfirmEmailChangeInput,
   DashboardData,
   Digest,
   Email,
   LoginInput,
   PlanTier,
+  ProfileSettings,
+  RequestAccountDeletionInput,
+  RequestAccountDeletionResult,
+  RequestEmailChangeInput,
   ResetPasswordInput,
   ResetRequestInput,
   SessionUser,
@@ -223,19 +230,33 @@ export const deliverySettings = {
 
 // ---- profile / AI instructions ----------------------------------------
 
-export interface Profile {
-  name: string;
-  email: string;
-  tier: string;
-}
-
 export const profile = {
   get: () =>
-    call<{ profile: Profile }>("/api/settings/profile").then((r) => r.profile),
+    call<{ profile: ProfileSettings }>("/api/settings/profile").then(
+      (r) => r.profile,
+    ),
   update: (patch: { name?: string }) =>
-    call<{ profile: Profile }>("/api/settings/profile", {
+    call<{ profile: ProfileSettings }>("/api/settings/profile", {
       method: "PATCH",
       body: JSON.stringify(patch),
+    }).then((r) => r.profile),
+  changePassword: (input: ChangePasswordInput) =>
+    call<{ ok: true }>("/api/settings/password", {
+      method: "POST",
+      body: JSON.stringify(input),
+      redirectOn401: false,
+    }),
+  requestEmailChange: (input: RequestEmailChangeInput) =>
+    call<{ ok: true }>("/api/settings/email", {
+      method: "POST",
+      body: JSON.stringify(input),
+      redirectOn401: false,
+    }),
+  confirmEmailChange: (input: ConfirmEmailChangeInput) =>
+    call<{ profile: ProfileSettings }>("/api/settings/email/confirm", {
+      method: "POST",
+      body: JSON.stringify(input),
+      redirectOn401: false,
     }).then((r) => r.profile),
 };
 
@@ -279,13 +300,15 @@ export const billing = {
 // ---- privacy -----------------------------------------------------------
 
 export const privacy = {
-  consents: () => call<{ consents: unknown[] }>("/api/privacy/consents"),
-  exportUrl: `${API_BASE}/api/privacy/export`,
-  erase: (password: string) =>
-    call<{ ok: true }>("/api/privacy/erase", {
+  erase: (input: RequestAccountDeletionInput) =>
+    call<RequestAccountDeletionResult>("/api/privacy/erase", {
       method: "POST",
-      body: JSON.stringify({ password, confirm: "delete my account" }),
+      body: JSON.stringify(input),
       redirectOn401: false,
+    }),
+  cancelErase: () =>
+    call<CancelAccountDeletionResult>("/api/privacy/erase/cancel", {
+      method: "POST",
     }),
 };
 

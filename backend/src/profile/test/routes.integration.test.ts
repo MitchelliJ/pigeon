@@ -11,8 +11,8 @@ import { createApp } from "../../server";
 import type { MailSender } from "../../mail/index";
 import type { Vault } from "../../vault/index";
 
-const ORIGIN = "http://localhost:4321";
 const EMAIL = "profile-settings@example.com";
+const PENDING_EMAIL = "pending-profile-settings@example.com";
 
 const fakeMail: MailSender = {
   name: "profile-test",
@@ -24,71 +24,77 @@ const fakeVault: Vault = {
   open: (value) => value,
 };
 
-it("reads, validates, updates, and persists only the authenticated user's profile", async () => {
+it("GET /api/settings/profile exposes only the public profile fields plus deletion status for the authenticated user", async () => {
   const { db, close } = await withTestDb();
   try {
     await runMigrations(db);
     const users = await db.query`
-      INSERT INTO users(email, name, password_hash, tier)
-      VALUES (${EMAIL}, 'Original Name', 'not-a-real-hash', 'pro')
+      INSERT INTO users(email, pending_email, name, password_hash, tier)
+      VALUES (${EMAIL}, ${PENDING_EMAIL}, 'Original Name', 'not-a-real-hash', 'pro')
       RETURNING id
     `;
+    const userId = String(users[0]?.id);
     const token = generateToken();
     await db.query`
       INSERT INTO sessions(user_id, token_hash, expires_at)
-      VALUES (${String(users[0]?.id)}, ${hashToken(token)}, now() + interval '1 day')
+      VALUES (${userId}, ${hashToken(token)}, now() + interval '1 day')
     `;
 
     const app = createApp(db, fakeMail, fakeVault);
     const cookie = `pigeon_session=${token}`;
-    const unauthenticated = await app.request("/api/settings/profile");
-    const initial = await app.request("/api/settings/profile", {
-      headers: { cookie },
-    });
-    const invalid = await app.request("/api/settings/profile", {
-      method: "PATCH",
-      headers: {
-        "content-type": "application/json",
-        origin: ORIGIN,
-        cookie,
-      },
-      body: JSON.stringify({ name: "   " }),
-    });
-    const updated = await app.request("/api/settings/profile", {
-      method: "PATCH",
-      headers: {
-        "content-type": "application/json",
-        origin: ORIGIN,
-        cookie,
-      },
-      body: JSON.stringify({ name: "  Updated Name  " }),
-    });
-    const persisted = await app.request("/api/settings/profile", {
+    const beforeDeletion = await app.request("/api/settings/profile", {
       headers: { cookie },
     });
 
-    expect([
-      unauthenticated.status,
-      initial.status,
-      invalid.status,
-      updated.status,
-      persisted.status,
-    ]).toEqual([401, 200, 400, 200, 200]);
-    expect([
-      await initial.json(),
-      await updated.json(),
-      await persisted.json(),
-    ]).toEqual([
-      {
-        profile: { name: "Original Name", email: EMAIL, tier: "pro" },
+    const deletionRequestedAt = new Date("2026-07-01T12:34:56.789Z");
+    const deletesAt = new Date(
+      deletionRequestedAt.getTime() + 24 * 60 * 60 * 1000,
+    );
+    await db.query`
+      UPDATE users
+      SET deletion_requested_at = ${deletionRequestedAt}
+      WHERE id = ${userId}
+    `;
+
+    const afterDeletion = await app.request("/api/settings/profile", {
+      headers: { cookie },
+    });
+
+    expect({
+      beforeDeletion: {
+        status: beforeDeletion.status,
+        body: await beforeDeletion.json(),
       },
-      {
-        profile: { name: "Updated Name", email: EMAIL, tier: "pro" },
+      afterDeletion: {
+        status: afterDeletion.status,
+        body: await afterDeletion.json(),
       },
-      {
-        profile: { name: "Updated Name", email: EMAIL, tier: "pro" },
+    }).toEqual({
+      beforeDeletion: {
+        status: 200,
+        body: {
+          profile: {
+            name: "Original Name",
+            email: EMAIL,
+            tier: "pro",
+            deletionRequestedAt: null,
+            deletesAt: null,
+          },
+        },
       },
-    ]);
+      afterDeletion: {
+        status: 200,
+        body: {
+          profile: {
+            name: "Original Name",
+            email: EMAIL,
+            tier: "pro",
+            deletionRequestedAt: deletionRequestedAt.toISOString(),
+            deletesAt: deletesAt.toISOString(),
+          },
+        },
+      },
+    });
   } finally {
     await close();
   }

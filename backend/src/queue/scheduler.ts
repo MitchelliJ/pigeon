@@ -39,6 +39,7 @@ export async function runSchedulerTick(db: Db): Promise<void> {
     SELECT mailboxes.id, mailboxes.last_synced_at, users.tier
     FROM mailboxes
     JOIN users ON users.id = mailboxes.user_id
+    WHERE users.deletion_requested_at IS NULL
   `) as unknown as DueCandidateRow[];
 
   const dueMailboxIds = rows
@@ -73,7 +74,9 @@ export async function enqueueDueClassifyJobs(db: Db): Promise<void> {
   const rows = await db.query`
     SELECT m.id
     FROM messages m
+    JOIN users u ON u.id = m.user_id
     WHERE m.summary IS NULL
+      AND u.deletion_requested_at IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM jobs j
         WHERE j.type = 'summarize_classify'
@@ -84,6 +87,25 @@ export async function enqueueDueClassifyJobs(db: Db): Promise<void> {
     LIMIT 500
   `;
   await Promise.all(rows.map((row) => enqueueClassifyJob(db, String(row.id))));
+}
+
+/**
+ * Queue account-erasure jobs for users whose 24-hour grace period has elapsed.
+ * The insert is set-based and idempotent: the jobs table's uniqueness rules
+ * absorb duplicate scheduler ticks via `ON CONFLICT DO NOTHING`.
+ */
+export async function enqueueDueAccountErasures(db: Db): Promise<void> {
+  await db.query`
+    INSERT INTO jobs(type, payload, status)
+    SELECT
+      'erase_account',
+      jsonb_build_object('userId', users.id::text),
+      'pending'
+    FROM users
+    WHERE deletion_requested_at IS NOT NULL
+      AND deletion_requested_at + interval '24 hours' <= now()
+    ON CONFLICT DO NOTHING
+  `;
 }
 
 /**
@@ -108,6 +130,7 @@ export async function scheduleQuietTriggeredDigests(
           ) AS window_start,
           trigger_message.id AS message_id
         FROM delivery_settings ds
+        JOIN users u ON u.id = ds.user_id
         JOIN channels c
           ON c.user_id = ds.user_id
          AND c.status = 'active'
@@ -127,6 +150,7 @@ export async function scheduleQuietTriggeredDigests(
           LIMIT 1
         ) trigger_message ON true
         WHERE ds.mode = 'quiet'
+          AND u.deletion_requested_at IS NULL
           AND NOT EXISTS (
             SELECT 1
             FROM delivery_attempts pending_digest
@@ -253,6 +277,7 @@ export async function scheduleQuietHeartbeats(
             ds.delivery_baseline_at
           ) AS window_start
         FROM delivery_settings ds
+        JOIN users u ON u.id = ds.user_id
         JOIN channels c
           ON c.user_id = ds.user_id
          AND c.status = 'active'
@@ -280,6 +305,7 @@ export async function scheduleQuietHeartbeats(
             ) AT TIME ZONE ds.timezone AS scheduled_for
         ) previous_slot
         WHERE ds.mode = 'quiet'
+          AND u.deletion_requested_at IS NULL
           AND due.scheduled_for > ds.delivery_baseline_at
       ),
       inserted_attempts AS (
@@ -349,6 +375,7 @@ export async function scheduleDailyDigests(db: Db, now: Date): Promise<void> {
           ) AS window_start,
           due.scheduled_for
         FROM delivery_settings ds
+        JOIN users u ON u.id = ds.user_id
         JOIN channels c
           ON c.user_id = ds.user_id
          AND c.status = 'active'
@@ -370,6 +397,7 @@ export async function scheduleDailyDigests(db: Db, now: Date): Promise<void> {
           LIMIT 1
         ) due
         WHERE ds.mode = 'daily'
+          AND u.deletion_requested_at IS NULL
           AND due.scheduled_for > COALESCE(
             ds.last_digest_cutoff_at,
             ds.delivery_baseline_at

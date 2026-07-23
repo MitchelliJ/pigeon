@@ -65,3 +65,41 @@ export function resetEmail(input: TemplateInput): MailTemplate {
     ].join("\n"),
   };
 }
+
+/** Build the new-email confirmation email for the change-email flow. */
+export function changeEmailConfirmation(input: TemplateInput): MailTemplate {
+  const link = `${input.baseUrl}/confirm-email?token=${input.token}`;
+  return {
+    subject: "Confirm your new email",
+    html: [
+      "<p>We received a request to change your Pigeon email address.</p>",
+      "<p>Confirm your new email by clicking the link below:</p>",
+      `<p><a href="${link}">${link}</a></p>`,
+      "<p>If you didn't request this, you can ignore this email.</p>",
+    ].join("\n"),
+    text: [
+      "We received a request to change your Pigeon email address.",
+      "",
+      "Confirm your new email by opening the link below:",
+      link,
+      "",
+      "If you didn't request this, you can ignore this email.",
+    ].join("\n"),
+  };
+}
+
+/** Build the old-email notice for the change-email flow. */
+export function emailChangeNotice(_input: TemplateInput): MailTemplate {
+  return {
+    subject: "Request to change your email address",
+    html: [
+      "<p>We received a request to change your Pigeon account email address.</p>",
+      "<p>If you didn't request this, you can ignore this email.</p>",
+    ].join("\n"),
+    text: [
+      "We received a request to change your Pigeon account email address.",
+      "",
+      "If you didn't request this, you can ignore this email.",
+    ].join("\n"),
+  };
+}

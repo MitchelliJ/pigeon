@@ -14,7 +14,10 @@
  * owns the password-reset round trip: requesting a reset link (subject to
  * its own cooldown, same no-enumeration rule as resend) and confirming it
  * (setting a new password hash and revoking every session the account has).
- * Session *admission* (looking up a live session by cookie and sliding its
+ * Also owns the authenticated password-change path: re-checking the current
+ * password, rotating the stored password hash, and revoking every other live
+ * session while keeping the requesting session alive. Session *admission*
+ * (looking up a live session by cookie and sliding its
  * expiry forward) is `requireAuth`'s job in `./middleware`, not this file's —
  * this file only ever mints (`createSession`) or revokes (`revokeSession`/
  * `revokeAllSessions`) rows.
@@ -29,13 +32,22 @@
 import { z } from "zod";
 import { hashPassword, isAcceptablePassword, verifyPassword } from "./password";
 import { generateToken, hashToken } from "./tokens";
-import { resetEmail, verificationEmail } from "../mail/templates";
+import {
+  changeEmailConfirmation,
+  emailChangeNotice,
+  resetEmail,
+  verificationEmail,
+} from "../mail/templates";
 import type { Db, TxClient } from "../db/index";
 import type { MailSender } from "../mail/index";
 import type { SessionUser, SignupInput } from "@pigeon/shared";
 
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
 /** How long a freshly-minted verify-email token stays valid. */
-const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const VERIFY_TOKEN_TTL_MS = DAY_MS;
 
 /**
  * Sign-up request shape. `password` strength is delegated to
@@ -66,7 +78,7 @@ export type SignupResult =
  * The two token kinds this file mints, matching the `auth_tokens.kind` CHECK
  * constraint (`db/migrations/0003_users_sessions.sql`).
  */
-type AuthTokenKind = "verify_email" | "reset_password";
+type AuthTokenKind = "verify_email" | "reset_password" | "change_email";
 
 /** Postgres SQLSTATE for a unique-constraint violation (e.g. `users.email`). */
 const UNIQUE_VIOLATION_CODE = "23505";
@@ -250,6 +262,21 @@ export async function signup(
   return { kind: "verify_email_sent" };
 }
 
+/** Build the shared auth-facing user shape from a selected users row. */
+function sessionUserFromRow(row: {
+  id?: unknown;
+  email?: unknown;
+  name?: unknown;
+  tier?: unknown;
+}): SessionUser {
+  return {
+    id: String(row.id),
+    email: String(row.email),
+    name: String(row.name),
+    tier: String(row.tier),
+  };
+}
+
 /** A session's sliding idle window — 30 days of inactivity ends it (FR-16). */
 const SESSION_IDLE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -373,18 +400,15 @@ export async function verify(
 
   const { user, sessionToken } = txResult;
 
-  const sessionUser: SessionUser = {
-    id: String(user.id),
-    email: String(user.email),
-    name: String(user.name),
-    tier: String(user.tier),
+  return {
+    kind: "verified",
+    user: sessionUserFromRow(user),
+    sessionToken,
   };
-
-  return { kind: "verified", user: sessionUser, sessionToken };
 }
 
 /** Cooldown between resend requests, to stop an inbox from being spammed. */
-const RESEND_COOLDOWN_MS = 60 * 1000;
+const RESEND_COOLDOWN_MS = MINUTE_MS;
 
 /**
  * Values come back from `postgres.js` as `Date` instances already; the
@@ -395,6 +419,21 @@ function toEpochMs(value: unknown): number {
   return value instanceof Date
     ? value.getTime()
     : new Date(String(value)).getTime();
+}
+
+/**
+ * Shared by flows whose cooldown starts when the current outstanding token was
+ * minted (derived as `expires_at - ttlMs`). `resendVerify` intentionally does
+ * not use this helper because its cooldown basis is different: voided-history,
+ * not outstanding-token age.
+ */
+function isOutstandingTokenWithinCooldown(
+  expiresAt: unknown,
+  ttlMs: number,
+  cooldownMs: number,
+): boolean {
+  const mintedAtMs = toEpochMs(expiresAt) - ttlMs;
+  return Date.now() - mintedAtMs < cooldownMs;
 }
 
 /**
@@ -456,10 +495,16 @@ export async function resendVerify(
 }
 
 /** How long a freshly-minted password-reset token stays valid (FR-21). */
-const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+const RESET_TOKEN_TTL_MS = HOUR_MS;
 
 /** Cooldown between reset-request requests, to stop an inbox from being spammed. */
-const RESET_REQUEST_COOLDOWN_MS = 60 * 1000;
+const RESET_REQUEST_COOLDOWN_MS = MINUTE_MS;
+
+/** How long a freshly-minted change-email token stays valid. */
+const CHANGE_EMAIL_TOKEN_TTL_MS = DAY_MS;
+
+/** Cooldown between change-email requests, to stop inboxes from being spammed. */
+const CHANGE_EMAIL_COOLDOWN_MS = MINUTE_MS;
 
 /**
  * There is exactly one outcome shape here on purpose (FR-22): reset-request
@@ -533,12 +578,15 @@ export async function requestReset(
     LIMIT 1
   `;
   const outstandingToken = outstanding[0];
-  if (outstandingToken) {
-    const mintedAtMs =
-      toEpochMs(outstandingToken.expires_at) - RESET_TOKEN_TTL_MS;
-    if (Date.now() - mintedAtMs < RESET_REQUEST_COOLDOWN_MS) {
-      return { kind: "handled" };
-    }
+  if (
+    outstandingToken &&
+    isOutstandingTokenWithinCooldown(
+      outstandingToken.expires_at,
+      RESET_TOKEN_TTL_MS,
+      RESET_REQUEST_COOLDOWN_MS,
+    )
+  ) {
+    return { kind: "handled" };
   }
 
   const resetToken = await db.withTx((tx) =>
@@ -557,6 +605,21 @@ export async function requestReset(
  * the "wrong password" path (PRD §3.1.2 FR-C; AC-2/AC-3).
  */
 const DECOY_PASSWORD_HASH = hashPassword("decoy-password-for-timing-parity");
+
+/**
+ * Verify `password` against a user's stored hash, or against the fixed decoy
+ * hash when no user row exists, so callers can keep their failure timing
+ * profile constant-time-ish without duplicating the fallback logic.
+ */
+function passwordMatchesUser(
+  password: string,
+  user: { password_hash?: unknown } | undefined,
+): boolean {
+  return verifyPassword(
+    password,
+    user ? String(user.password_hash) : DECOY_PASSWORD_HASH,
+  );
+}
 
 export type LoginResult =
   | { kind: "logged_in"; user: SessionUser; sessionToken: string }
@@ -583,10 +646,7 @@ export async function login(
   `;
   const user = users[0];
 
-  const passwordMatches = verifyPassword(
-    password,
-    user ? String(user.password_hash) : DECOY_PASSWORD_HASH,
-  );
+  const passwordMatches = passwordMatchesUser(password, user);
 
   if (!user || !user.email_verified_at || !passwordMatches) {
     return { kind: "bad_credentials" };
@@ -596,14 +656,11 @@ export async function login(
     createSession(tx, String(user.id)),
   );
 
-  const sessionUser: SessionUser = {
-    id: String(user.id),
-    email: String(user.email),
-    name: String(user.name),
-    tier: String(user.tier),
+  return {
+    kind: "logged_in",
+    user: sessionUserFromRow(user),
+    sessionToken,
   };
-
-  return { kind: "logged_in", user: sessionUser, sessionToken };
 }
 
 /**
@@ -634,6 +691,27 @@ async function revokeAllSessions(tx: TxClient, userId: unknown): Promise<void> {
 }
 
 /**
+ * Revoke every currently-live session for `userId` except the session whose
+ * hash authenticated this request. Used by authenticated password change so
+ * the caller stays signed in while all their other live sessions are ended.
+ */
+async function revokeOtherLiveSessions(
+  tx: TxClient,
+  userId: unknown,
+  sessionTokenHash: string,
+): Promise<void> {
+  await tx`
+    UPDATE sessions SET revoked_at = now()
+    WHERE user_id = ${userId}
+      AND token_hash <> ${sessionTokenHash}
+      AND revoked_at IS NULL
+      AND expires_at > now()
+      AND created_at + interval '90 days' > now()
+      AND last_seen_at + interval '30 days' > now()
+  `;
+}
+
+/**
  * Reset-confirm request shape. `newPassword` strength is delegated to
  * `isAcceptablePassword`, same rule as sign-up (FR-23).
  */
@@ -646,6 +724,47 @@ export const resetSchema = z.object({
 
 export type ResetPasswordResult =
   { kind: "reset" } | { kind: "invalid_or_expired_token" };
+
+export type ChangePasswordResult =
+  { kind: "changed" } | { kind: "bad_credentials" };
+
+export type RequestEmailChangeResult = { kind: "handled" };
+
+export type ConfirmEmailChangeResult =
+  | {
+      kind: "confirmed";
+      profile: {
+        name: string;
+        email: string;
+        tier: string;
+      };
+    }
+  | { kind: "invalid_or_expired_token" }
+  | { kind: "email_taken" };
+
+/**
+ * Re-check an authenticated user's current password without making any
+ * mutations, returning the same generic bad-credentials outcome shape used by
+ * login and password-change so callers never expose account state.
+ */
+export async function verifyCurrentPassword(
+  db: Db | TxClient,
+  userId: string,
+  currentPassword: string,
+): Promise<{ kind: "verified" } | { kind: "bad_credentials" }> {
+  const query = "query" in db ? db.query : db;
+  const users = await query`
+    SELECT password_hash FROM users WHERE id = ${userId}
+  `;
+  const user = users[0];
+  const passwordMatches = passwordMatchesUser(currentPassword, user);
+
+  if (!user || !passwordMatches) {
+    return { kind: "bad_credentials" };
+  }
+
+  return { kind: "verified" };
+}
 
 /**
  * Confirm a password reset (FR-23; AC-6). Looks up an unconsumed, unexpired
@@ -703,4 +822,250 @@ export async function resetPassword(
   }
 
   return { kind: "reset" };
+}
+
+/**
+ * Change an authenticated user's password. Re-checks the presented current
+ * password and, on success, updates `users.password_hash` plus `updated_at`
+ * and revokes every other currently-live session in the same transaction.
+ */
+export async function changePassword(
+  db: Db,
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+  sessionTokenHash: string,
+): Promise<ChangePasswordResult> {
+  return db.withTx(async (tx) => {
+    const verification = await verifyCurrentPassword(
+      tx,
+      userId,
+      currentPassword,
+    );
+    if (verification.kind === "bad_credentials") {
+      return verification;
+    }
+
+    const passwordHash = hashPassword(newPassword);
+    await tx`
+      UPDATE users
+      SET password_hash = ${passwordHash}, updated_at = now()
+      WHERE id = ${userId}
+    `;
+    await revokeOtherLiveSessions(tx, userId, sessionTokenHash);
+
+    return { kind: "changed" };
+  });
+}
+
+async function sendChangeEmailConfirmation(
+  mail: MailSender,
+  config: SignupConfig,
+  email: string,
+  token: string,
+): Promise<void> {
+  try {
+    const template = changeEmailConfirmation({
+      to: email,
+      baseUrl: config.APP_BASE_URL,
+      token,
+    });
+    await mail.send({
+      to: email,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+    });
+  } catch (err) {
+    console.error(
+      "requestEmailChange: failed to send change-email confirmation",
+      err,
+    );
+  }
+}
+
+async function sendEmailChangeNotice(
+  mail: MailSender,
+  config: SignupConfig,
+  email: string,
+): Promise<void> {
+  try {
+    const template = emailChangeNotice({
+      to: email,
+      baseUrl: config.APP_BASE_URL,
+      token: "",
+    });
+    await mail.send({
+      to: email,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+    });
+  } catch (err) {
+    console.error(
+      "requestEmailChange: failed to send change-email notice",
+      err,
+    );
+  }
+}
+
+export async function requestEmailChange(
+  db: Db,
+  mail: MailSender,
+  config: SignupConfig,
+  userId: string,
+  newEmail: string,
+): Promise<RequestEmailChangeResult> {
+  const normalizedNewEmail = newEmail.trim().toLowerCase();
+
+  const txResult = await db.withTx(async (tx) => {
+    const users = await tx`
+      SELECT email, pending_email FROM users
+      WHERE id = ${userId}
+      FOR UPDATE
+    `;
+    const user = users[0];
+    if (!user) {
+      throw new Error(`requestEmailChange: no user for id ${userId}`);
+    }
+
+    const currentEmail = String(user.email);
+    if (currentEmail.toLowerCase() === normalizedNewEmail) {
+      return null;
+    }
+
+    const outstanding = await tx`
+      SELECT expires_at FROM auth_tokens
+      WHERE user_id = ${userId} AND kind = 'change_email' AND consumed_at IS NULL
+      ORDER BY expires_at DESC
+      LIMIT 1
+    `;
+    const outstandingToken = outstanding[0];
+    if (
+      outstandingToken &&
+      isOutstandingTokenWithinCooldown(
+        outstandingToken.expires_at,
+        CHANGE_EMAIL_TOKEN_TTL_MS,
+        CHANGE_EMAIL_COOLDOWN_MS,
+      )
+    ) {
+      return null;
+    }
+
+    await tx`
+      UPDATE users
+      SET pending_email = ${normalizedNewEmail}, updated_at = now()
+      WHERE id = ${userId}
+    `;
+    const token = await voidOutstandingAndMint(
+      tx,
+      userId,
+      "change_email",
+      CHANGE_EMAIL_TOKEN_TTL_MS,
+    );
+
+    return {
+      oldEmail: currentEmail,
+      newEmail: normalizedNewEmail,
+      token,
+    };
+  });
+
+  if (!txResult) {
+    return { kind: "handled" };
+  }
+
+  await sendChangeEmailConfirmation(
+    mail,
+    config,
+    txResult.newEmail,
+    txResult.token,
+  );
+  await sendEmailChangeNotice(mail, config, txResult.oldEmail);
+
+  return { kind: "handled" };
+}
+
+/**
+ * Confirm a pending email change from a single-use `change_email` token.
+ * The token itself is the credential, so this deliberately does not touch
+ * session state: it only consumes the token and swaps `pending_email` into
+ * `email` in one transaction.
+ */
+export async function confirmEmailChange(
+  db: Db,
+  token: string,
+): Promise<ConfirmEmailChangeResult> {
+  const tokenHash = hashToken(token);
+
+  let txResult: {
+    name: string;
+    email: string;
+    tier: string;
+  } | null;
+
+  try {
+    txResult = await db.withTx(async (tx) => {
+      const rows = await tx`
+        SELECT t.id, t.user_id, u.pending_email
+        FROM auth_tokens t
+        LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.token_hash = ${tokenHash}
+          AND t.kind = 'change_email'
+          AND t.consumed_at IS NULL
+          AND t.expires_at > now()
+      `;
+      const row = rows[0];
+      if (
+        !row ||
+        row.pending_email === null ||
+        row.pending_email === undefined
+      ) {
+        return null;
+      }
+
+      const consumed = await tx`
+        UPDATE auth_tokens SET consumed_at = now()
+        WHERE id = ${row.id} AND consumed_at IS NULL
+        RETURNING id
+      `;
+      if (consumed.length === 0) {
+        throw new TokenRaceLost();
+      }
+
+      const updatedUsers = await tx`
+        UPDATE users
+        SET email = pending_email, pending_email = NULL, updated_at = now()
+        WHERE id = ${row.user_id} AND pending_email IS NOT NULL
+        RETURNING name, email, tier
+      `;
+      const updatedUser = updatedUsers[0];
+      if (!updatedUser) {
+        throw new TokenRaceLost();
+      }
+
+      return {
+        name: String(updatedUser.name),
+        email: String(updatedUser.email),
+        tier: String(updatedUser.tier),
+      };
+    });
+  } catch (err) {
+    if (err instanceof TokenRaceLost) {
+      return { kind: "invalid_or_expired_token" };
+    }
+    if (isUniqueViolation(err)) {
+      return { kind: "email_taken" };
+    }
+    throw err;
+  }
+
+  if (!txResult) {
+    return { kind: "invalid_or_expired_token" };
+  }
+
+  return {
+    kind: "confirmed",
+    profile: txResult,
+  };
 }

@@ -15,6 +15,7 @@ import { createChannelRegistry } from "../channels/registry";
 import type { ChannelRegistry } from "../channels/registry";
 import { claimJobs, completeJob, failJob } from "./store";
 import { handleDeliverChannelJob } from "./handlers/deliver-channel";
+import { handleEraseAccountJob } from "./handlers/erase-account";
 import { handleSyncMailboxJob } from "./handlers/sync-mailbox";
 import { handleSummarizeClassifyJob } from "./handlers/summarize-classify";
 import type { Job } from "./types";
@@ -55,6 +56,12 @@ export async function runWorkerTick(
           vault,
           job.payload as { deliveryAttemptId: string },
           channelRegistry,
+        );
+      case "erase_account":
+        return handleEraseAccountJob(
+          db,
+          job.id,
+          job.payload as { userId: string },
         );
       default: {
         // JobType is a closed set — any addition here must add a matching
