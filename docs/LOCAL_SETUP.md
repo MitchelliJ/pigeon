@@ -74,8 +74,31 @@ without it.
 6. Go to **Certificates & secrets** → **Client secrets** → **New client
    secret**. Copy the secret **Value** (not the Secret ID) immediately — it's
    shown only once — into `MICROSOFT_CLIENT_SECRET`.
-7. Restart `pnpm dev` (and `pnpm dev:worker`) so the new env is picked up. The
-   connect button appears in the "Add inbox" dialog once both keys are set.
+7. Set `APP_BASE_URL=http://localhost:4321` in your root `.env` (it's also the
+   dev default). It must match the origin in the redirect URI above, because
+   Pigeon builds `redirect_uri` as `<APP_BASE_URL>/api/oauth/microsoft/callback`.
+8. Restart `pnpm dev` (and `pnpm dev:worker`) so the new env is picked up — the
+   worker needs `MICROSOFT_CLIENT_*` too, to refresh access tokens during sync.
+   The connect button appears in the "Add inbox" dialog once both keys are set.
+
+### Local dev caveat — keep everything on one origin
+
+The OAuth callback is a top-level redirect from Microsoft back to your app and
+is behind `requireAuth`, so the `pigeon_session` cookie must be sent on that
+redirect. That cookie is `SameSite=Lax` (and not `Secure` in dev), which works
+**only if login, the `/start` click, and the callback all share one origin**.
+
+So for local OAuth, leave `PUBLIC_API_BASE` **unset** (do not create a
+`frontend/.env` that sets it). With it empty the browser talks to
+`http://localhost:4321` for everything and Astro's dev proxy forwards `/api`
+→ `:8788`, keeping the session cookie on a single origin (`:4321`) that matches
+`APP_BASE_URL` and the Azure redirect URI. If instead you point
+`PUBLIC_API_BASE` at `http://localhost:8788`, the browser and cookie live on
+`:8788`, so you must also set `APP_BASE_URL=http://localhost:8788` and register
+`http://localhost:8788/api/oauth/microsoft/callback` as the redirect URI —
+otherwise the callback lands on a different origin than the session cookie and
+fails with `?connected=error`. Using the proxy (`:4321` everywhere) is simpler
+and mirrors production, where the app and API are served from the same origin.
 
 The IMAP scope (`https://outlook.office.com/IMAP.AccessAsUser.All` plus
 `offline_access openid email`) is requested automatically by Pigeon — you do
