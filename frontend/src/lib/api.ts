@@ -316,8 +316,8 @@ export const privacy = {
 
 export interface OAuthProviderInfo {
   id: string;
-  displayName: string;
-  providerBadge: string;
+  label: string;
+  startPath: string;
 }
 
 export const oauth = {

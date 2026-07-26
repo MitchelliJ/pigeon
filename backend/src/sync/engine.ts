@@ -51,11 +51,12 @@ export type SyncResult =
 /** The subset of a `mailboxes` row `syncMailbox` needs to drive a connector. */
 interface MailboxRow {
   user_id: string;
+  protocol: string;
   host: string;
   port: number;
   tls: boolean;
   username: string;
-  password_ciphertext: string;
+  password_ciphertext: string | null;
   last_synced_at: Date | null;
 }
 
@@ -121,32 +122,64 @@ export async function syncMailbox(
   connector: MailboxConnector,
   mailboxId: string,
   connectTimeoutMs?: number,
+  resolveAccessToken?: (mailboxId: string) => Promise<string>,
 ): Promise<SyncResult> {
   const rows = await db.query`
-    SELECT user_id, host, port, tls, username, password_ciphertext, last_synced_at
+    SELECT user_id, protocol, host, port, tls, username, password_ciphertext, last_synced_at
     FROM mailboxes WHERE id = ${mailboxId}`;
   const row = rows[0] as MailboxRow | undefined;
   if (!row) {
     return { ok: false, reason: "mailbox not found" };
   }
 
-  const params: TestConnectionParams = {
-    host: row.host,
-    port: row.port,
-    tls: row.tls,
-    username: row.username,
-    password: vault.open(row.password_ciphertext),
-    // Honor the operator-configured MAILBOX_CONNECT_TIMEOUT_MS on the
-    // background-sync path (threaded down from the worker); without this the
-    // IMAP connector applies no explicit timeout at all and a hung server
-    // stalls the job until imapflow's own internal defaults fire.
-    ...(connectTimeoutMs !== undefined ? { connectTimeoutMs } : {}),
-  };
+  const isFirstSyncAttempt = row.last_synced_at === null;
+
+  let params: TestConnectionParams;
+  if (row.protocol === "microsoft-oauth") {
+    if (!resolveAccessToken) {
+      await markError(db, mailboxId, isFirstSyncAttempt);
+      return { ok: false, reason: "no access-token resolver configured" };
+    }
+    let accessToken: string;
+    try {
+      // A revoked refresh token is a connector-level failure, mapped like any
+      // other so the mailbox goes to `error` rather than throwing out of the job.
+      accessToken = await resolveAccessToken(mailboxId);
+    } catch (err) {
+      await markError(db, mailboxId, isFirstSyncAttempt);
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+    params = {
+      host: row.host,
+      port: row.port,
+      tls: row.tls,
+      username: row.username,
+      accessToken,
+      ...(connectTimeoutMs !== undefined ? { connectTimeoutMs } : {}),
+    };
+  } else {
+    params = {
+      host: row.host,
+      port: row.port,
+      tls: row.tls,
+      username: row.username,
+      // WHY: OAuth mailboxes have no password_ciphertext to open — this
+      // branch is only reached for password protocols, where it's guaranteed set.
+      password: vault.open(row.password_ciphertext as string),
+      // Honor the operator-configured MAILBOX_CONNECT_TIMEOUT_MS on the
+      // background-sync path (threaded down from the worker); without this the
+      // IMAP connector applies no explicit timeout at all and a hung server
+      // stalls the job until imapflow's own internal defaults fire.
+      ...(connectTimeoutMs !== undefined ? { connectTimeoutMs } : {}),
+    };
+  }
 
   await db.query`
     UPDATE mailboxes SET status = 'syncing' WHERE id = ${mailboxId}`;
 
-  const isFirstSyncAttempt = row.last_synced_at === null;
   const cutoffPolicy = getSyncCutoffPolicy(row.last_synced_at);
 
   const listResult = cutoffPolicy.connectorSince

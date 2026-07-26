@@ -26,11 +26,12 @@ export async function runWorkerTick(
   vault: Vault,
   concurrency: number,
   getConnectorFn: (
-    protocol: "imap" | "pop3",
+    protocol: "imap" | "pop3" | "microsoft-oauth",
   ) => MailboxConnector = getConnector,
   classifier: LlmClassifier = mockLlmClassifier,
   connectTimeoutMs?: number,
   channelRegistry: ChannelRegistry = createChannelRegistry({ fetch }),
+  resolveAccessToken?: (mailboxId: string) => Promise<string>,
 ): Promise<void> {
   const jobs = await claimJobs(db, concurrency);
 
@@ -43,6 +44,7 @@ export async function runWorkerTick(
           job.payload as { mailboxId: string },
           getConnectorFn,
           connectTimeoutMs,
+          resolveAccessToken,
         );
       case "summarize_classify":
         return handleSummarizeClassifyJob(

@@ -73,7 +73,10 @@ export const defaultImapFlowFactory: ImapClientFactory = (params) => {
     host: params.host,
     port: params.port,
     secure: params.tls,
-    auth: { user: params.username, pass: params.password },
+    auth:
+      params.accessToken !== undefined
+        ? { user: params.username, accessToken: params.accessToken }
+        : { user: params.username, pass: params.password },
     logger: false,
     ...(params.caCert ? { tls: { ca: params.caCert } } : {}),
     connectionTimeout: timeoutMs,

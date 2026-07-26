@@ -57,6 +57,28 @@ async function insertMailbox(
   return String(rows[0]?.id);
 }
 
+/**
+ * Insert an OAuth mailbox row: NULL password_ciphertext, a sealed refresh
+ * token instead, satisfying `mailboxes_credential_by_protocol_check`.
+ */
+async function insertOAuthMailbox(
+  db: Db,
+  vault: Vault,
+  userId: string,
+  address: string,
+): Promise<string> {
+  const rows = await db.query`
+    INSERT INTO mailboxes(
+      user_id, provider, protocol, label, address, host, port, tls,
+      username, oauth_refresh_ciphertext, oauth_scope
+    ) VALUES (
+      ${userId}, ${"outlook"}, ${"microsoft-oauth"}, ${"Outlook"}, ${address},
+      ${"outlook.office365.com"}, ${993}, ${true}, ${address},
+      ${vault.seal("sealed-refresh")}, ${"scope"}
+    ) RETURNING id`;
+  return String(rows[0]?.id);
+}
+
 async function insertStoredMessage(
   db: Db,
   userId: string,
@@ -650,6 +672,117 @@ describe("syncMailbox", () => {
 
       expect(okFake.listMessageIdsCalls.length).toBe(1);
       expect(okFake.listMessageIdsCalls[0]?.opts?.since).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  it("microsoft-oauth mailbox resolves an access token via the injected resolver and passes access-token params (no password) to the connector", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "oauth-sync@example.com");
+      const mailboxId = await insertOAuthMailbox(
+        db,
+        vault,
+        userId,
+        "oauth-mb@outlook.com",
+      );
+
+      let capturedListParams: TestConnectionParams | undefined;
+      const connector: MailboxConnector = {
+        async testConnection(_params: TestConnectionParams) {
+          return { ok: true };
+        },
+        async listMessageIds(params: TestConnectionParams, _opts) {
+          capturedListParams = params;
+          return { ok: true, ids: [] };
+        },
+        async fetchMessages(_params: TestConnectionParams, _ids, _opts) {
+          return { ok: true, messages: [] };
+        },
+      };
+
+      let resolverCalledWith: string | undefined;
+      const resolveAccessToken = async (id: string): Promise<string> => {
+        resolverCalledWith = id;
+        return "faked-access-token";
+      };
+
+      await syncMailbox(
+        db,
+        vault,
+        connector,
+        mailboxId,
+        undefined,
+        resolveAccessToken,
+      );
+
+      expect(resolverCalledWith).toBe(mailboxId);
+      expect(capturedListParams).toBeDefined();
+      const params = capturedListParams as TestConnectionParams;
+      expect(params.host).toBe("outlook.office365.com");
+      expect(params.port).toBe(993);
+      expect(params.username).toBe("oauth-mb@outlook.com");
+      expect(
+        "password" in params ? params.password : undefined,
+      ).toBeUndefined();
+      expect("accessToken" in params ? params.accessToken : undefined).toBe(
+        "faked-access-token",
+      );
+
+      const mailboxRows = await db.query`
+        SELECT status FROM mailboxes WHERE id = ${mailboxId}`;
+      expect(mailboxRows[0]?.status).toBe("connected");
+    } finally {
+      await close();
+    }
+  });
+
+  it("microsoft-oauth mailbox with a rejecting resolveAccessToken (revoked refresh token) does not throw, returns ok:false, marks the mailbox status='error', and ingests no messages", async () => {
+    const { db, close } = await withTestDb();
+    try {
+      await runMigrations(db);
+      const vault = createVault(TEST_VAULT_KEY);
+      const userId = await insertUser(db, "oauth-revoked@example.com");
+      const mailboxId = await insertOAuthMailbox(
+        db,
+        vault,
+        userId,
+        "oauth-revoked-mb@outlook.com",
+      );
+
+      const fake = createFakeConnector();
+      const resolveAccessToken = async (
+        _mailboxId: string,
+      ): Promise<string> => {
+        throw new Error("refresh token revoked");
+      };
+
+      const result = await syncMailbox(
+        db,
+        vault,
+        fake,
+        mailboxId,
+        undefined,
+        resolveAccessToken,
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toContain("refresh token revoked");
+      }
+
+      const mailboxRows = await db.query`
+        SELECT status, last_synced_at FROM mailboxes WHERE id = ${mailboxId}`;
+      expect(mailboxRows[0]?.status).toBe("error");
+
+      const messageRows = await db.query`
+        SELECT count(*) FROM mailbox_messages WHERE mailbox_id = ${mailboxId}`;
+      expect(Number(messageRows[0]?.count)).toBe(0);
+
+      expect(fake.listMessageIdsCalls.length).toBe(0);
     } finally {
       await close();
     }

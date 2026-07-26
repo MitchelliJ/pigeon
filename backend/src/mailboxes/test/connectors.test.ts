@@ -28,6 +28,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { getConnector } from "../connectors/index";
+import { imapConnector } from "../connectors/imap";
 import {
   startFakePop3Server,
   startFakePop3ServerThatNeverResponds,
@@ -388,5 +389,11 @@ describe("pop3 connector — listMessageIds/fetchMessages", () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe("getConnector — OAuth protocols (Feature 13)", () => {
+  it("returns the IMAP connector for 'microsoft-oauth'", () => {
+    expect(getConnector("microsoft-oauth")).toBe(imapConnector);
   });
 });

@@ -370,3 +370,44 @@ describe("describeConfig — MISTRAL_API_KEY / MISTRAL_MODEL (FR-19)", () => {
     expect(summary.MISTRAL_API_KEY).toBe("not set");
   });
 });
+
+describe("parseConfig — Microsoft OAuth credentials (Feature 13)", () => {
+  it("accepts MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET and echoes the exact passed values", () => {
+    const cfg = parseConfig({
+      VAULT_MASTER_KEY: TEST_VAULT_KEY,
+      MICROSOFT_CLIENT_ID: "ms-client-id-123",
+      MICROSOFT_CLIENT_SECRET: "ms-client-secret-abc",
+    });
+
+    expect(cfg.MICROSOFT_CLIENT_ID).toBe("ms-client-id-123");
+    expect(cfg.MICROSOFT_CLIENT_SECRET).toBe("ms-client-secret-abc");
+  });
+
+  it("leaves MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET undefined when absent from env", () => {
+    const cfg = parseConfig({ VAULT_MASTER_KEY: TEST_VAULT_KEY });
+
+    expect(cfg.MICROSOFT_CLIENT_ID).toBeUndefined();
+    expect(cfg.MICROSOFT_CLIENT_SECRET).toBeUndefined();
+  });
+});
+
+describe("describeConfig — Microsoft OAuth credentials (Feature 13)", () => {
+  it("redacts MICROSOFT_CLIENT_SECRET as set/not set", () => {
+    const summary = describeConfig({
+      MICROSOFT_CLIENT_ID: "ms-id",
+      MICROSOFT_CLIENT_SECRET: "ms-secret-xyz",
+    });
+
+    const json = JSON.stringify(summary);
+    // The secret must never appear in the redacted summary.
+    expect(json).not.toContain("ms-secret-xyz");
+    // MICROSOFT_CLIENT_SECRET reports presence only, never the raw value.
+    expect(summary.MICROSOFT_CLIENT_SECRET).toBe("set");
+  });
+
+  it("reports MICROSOFT_CLIENT_SECRET as not set when absent", () => {
+    const summary = describeConfig({});
+
+    expect(summary.MICROSOFT_CLIENT_SECRET).toBe("not set");
+  });
+});

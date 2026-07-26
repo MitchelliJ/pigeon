@@ -23,13 +23,15 @@ export async function handleSyncMailboxJob(
   vault: Vault,
   payload: { mailboxId: string },
   getConnectorFn: (
-    protocol: "imap" | "pop3",
+    protocol: "imap" | "pop3" | "microsoft-oauth",
   ) => MailboxConnector = getConnector,
   connectTimeoutMs?: number,
+  resolveAccessToken?: (mailboxId: string) => Promise<string>,
 ): Promise<void> {
   const rows = await db.query`
     SELECT protocol FROM mailboxes WHERE id = ${payload.mailboxId}`;
-  const row = rows[0] as { protocol: "imap" | "pop3" } | undefined;
+  const row = rows[0] as
+    { protocol: "imap" | "pop3" | "microsoft-oauth" } | undefined;
   if (!row) {
     // A job whose payload references a mailbox that no longer exists is a
     // programming/data error, not a connector-level sync failure — throw
@@ -44,6 +46,7 @@ export async function handleSyncMailboxJob(
     connector,
     payload.mailboxId,
     connectTimeoutMs,
+    resolveAccessToken,
   );
   if (!result.ok) {
     throw new Error(result.reason);

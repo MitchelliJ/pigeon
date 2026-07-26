@@ -197,7 +197,7 @@ export default function AddInboxDialog(props: {
                       style={{ width: "100%", "margin-top": "6px" }}
                       href={oauth.startUrl(p.id)}
                     >
-                      Continue with {p.displayName}
+                      Connect {p.label}
                     </a>
                   )}
                 </For>

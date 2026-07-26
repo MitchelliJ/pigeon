@@ -32,6 +32,12 @@ const configSchema = z
     MISTRAL_API_KEY: z.string().optional(),
     // Mistral model used for LLM processing. Defaults to mistral-medium-3-5.
     MISTRAL_MODEL: z.string().default("mistral-medium-3-5"),
+    // OAuth client ID for Microsoft (Feature 13 OAuth connectors). Optional in
+    // every environment — the feature is unconfigured by default.
+    MICROSOFT_CLIENT_ID: z.string().optional(),
+    // OAuth client secret for Microsoft. Secret — never echoed. Optional in
+    // every environment — the feature is unconfigured by default.
+    MICROSOFT_CLIENT_SECRET: z.string().optional(),
     // Whether new sign-ups are accepted. Accepts the strings "true"/"false"
     // from env (z.coerce.boolean() would misread "false" as true).
     SIGNUP_OPEN: z
@@ -131,6 +137,8 @@ export type Config = {
   MAIL_FROM: string | undefined;
   RESEND_API_KEY: string | undefined;
   MISTRAL_API_KEY: string | undefined;
+  MICROSOFT_CLIENT_ID: string | undefined;
+  MICROSOFT_CLIENT_SECRET: string | undefined;
   MISTRAL_MODEL: string;
   SIGNUP_OPEN: boolean;
   LOG_LEVEL: "trace" | "debug" | "info" | "warn" | "error";
@@ -166,6 +174,8 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     MAIL_FROM: parsed.MAIL_FROM,
     RESEND_API_KEY: parsed.RESEND_API_KEY,
     MISTRAL_API_KEY: parsed.MISTRAL_API_KEY,
+    MICROSOFT_CLIENT_ID: parsed.MICROSOFT_CLIENT_ID,
+    MICROSOFT_CLIENT_SECRET: parsed.MICROSOFT_CLIENT_SECRET,
     MISTRAL_MODEL: parsed.MISTRAL_MODEL,
     SIGNUP_OPEN: parsed.SIGNUP_OPEN,
     LOG_LEVEL: parsed.LOG_LEVEL,
@@ -211,6 +221,9 @@ export function describeConfig(
   const resendApiKey = p?.RESEND_API_KEY ?? env.RESEND_API_KEY;
   const mistralApiKey = p?.MISTRAL_API_KEY ?? env.MISTRAL_API_KEY;
   const vaultMasterKey = p?.VAULT_MASTER_KEY ?? env.VAULT_MASTER_KEY;
+  // MICROSOFT_CLIENT_SECRET is a secret: presence only.
+  const microsoftClientSecret =
+    p?.MICROSOFT_CLIENT_SECRET ?? env.MICROSOFT_CLIENT_SECRET;
   // SIGNUP_OPEN: report as a label (not the raw env string).
   const signupOpen = (() => {
     const value = p?.SIGNUP_OPEN ?? env.SIGNUP_OPEN === "true";
@@ -225,6 +238,9 @@ export function describeConfig(
     MAIL_FROM: mailFrom ? "set" : "not set",
     RESEND_API_KEY: resendApiKey ? "set" : "not set",
     MISTRAL_API_KEY: mistralApiKey ? "set" : "not set",
+    MICROSOFT_CLIENT_ID:
+      (p?.MICROSOFT_CLIENT_ID ?? env.MICROSOFT_CLIENT_ID) ? "set" : "not set",
+    MICROSOFT_CLIENT_SECRET: microsoftClientSecret ? "set" : "not set",
     // MISTRAL_MODEL is not a secret: report the resolved (defaulted) value
     // when parsing succeeds, else the raw env value, else "not set".
     MISTRAL_MODEL: p ? p.MISTRAL_MODEL : (env.MISTRAL_MODEL ?? "not set"),

@@ -30,6 +30,9 @@ import {
 } from "./queue/scheduler";
 import { runWorkerTick } from "./queue/worker-loop";
 import { loadDotEnv } from "./env";
+import { getAccessToken } from "./oauth/tokens";
+import { refreshAccessToken } from "./oauth/microsoft";
+import type { TokenPoster } from "./oauth/microsoft";
 
 interface AccountErasureSchedulerDependencies {
   setInterval?: (
@@ -74,6 +77,30 @@ if (isMain) {
   const channelRegistry = createChannelRegistry({ fetch });
   const HEARTBEAT_MS = config.WORKER_HEARTBEAT_INTERVAL_MS;
 
+  const microsoftPost: TokenPoster = async (url, form) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form,
+    });
+    return {
+      ok: res.ok,
+      status: res.status,
+      json: () => res.json() as Promise<unknown>,
+    };
+  };
+  const resolveAccessToken = (mailboxId: string): Promise<string> =>
+    getAccessToken(db, vault, mailboxId, (refreshToken) =>
+      refreshAccessToken(
+        {
+          clientId: config.MICROSOFT_CLIENT_ID ?? "",
+          clientSecret: config.MICROSOFT_CLIENT_SECRET ?? "",
+          refreshToken,
+        },
+        microsoftPost,
+      ),
+    );
+
   console.log("🕊️  Pigeon worker started");
 
   const timer = setInterval(() => {
@@ -116,6 +143,7 @@ if (isMain) {
       classifier,
       config.MAILBOX_CONNECT_TIMEOUT_MS,
       channelRegistry,
+      resolveAccessToken,
     ).catch(() => {
       console.error("[worker] tick failed");
     });

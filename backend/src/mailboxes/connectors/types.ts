@@ -16,12 +16,11 @@
  * self-signed certificate and use a short timeout, without weakening the
  * production TLS/timeout behavior for real users.
  */
-export type TestConnectionParams = {
+type BaseConnectionParams = {
   host: string;
   port: number;
   tls: boolean;
   username: string;
-  password: string;
   /**
    * Test-only: an additional PEM-encoded CA certificate to trust, on top of
    * (or, depending on Node version, instead of — see imap.ts) the system
@@ -35,6 +34,24 @@ export type TestConnectionParams = {
    */
   connectTimeoutMs?: number;
 };
+
+// password-based protocols (imap/pop3)
+type PasswordConnectionParams = BaseConnectionParams & {
+  password: string;
+  accessToken?: never;
+};
+// OAuth (XOAUTH2) protocols (microsoft-oauth/gmail-oauth)
+type AccessTokenConnectionParams = BaseConnectionParams & {
+  accessToken: string;
+  password?: never;
+};
+
+/**
+ * `password` and `accessToken` are mutually exclusive — mirrors the DB's
+ * password-XOR-oauth-token invariant for mailbox credentials.
+ */
+export type TestConnectionParams =
+  PasswordConnectionParams | AccessTokenConnectionParams;
 
 export type TestConnectionResult = { ok: true } | { ok: false; reason: string };
 

@@ -31,6 +31,8 @@ const config: Config = {
   SCHEDULER_INTERVAL_MS: 60000,
   MISTRAL_API_KEY: "ml_test_key",
   MISTRAL_MODEL: "mistral-medium-3-5",
+  MICROSOFT_CLIENT_ID: undefined,
+  MICROSOFT_CLIENT_SECRET: undefined,
 };
 
 const input: ClassifyInput = {

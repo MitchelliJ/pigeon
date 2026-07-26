@@ -5,6 +5,7 @@ import {
   channels as channelsApi,
   deliverySettings,
   mailboxes,
+  oauth,
 } from "../lib/api";
 import { formatDateTime, formatTime } from "../lib/format";
 import {
@@ -164,6 +165,9 @@ export default function Sidebar(props: {
                 onClick={() => {
                   if (connected()) {
                     void syncInbox(acc);
+                  } else if (acc.protocol === "microsoft-oauth") {
+                    // OAuth mailboxes must re-consent via the provider, not the password dialog
+                    window.location.href = oauth.startUrl("microsoft");
                   } else {
                     openReconnect(acc);
                   }

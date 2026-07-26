@@ -50,6 +50,39 @@ local dev.
 (Mistral, Mollie, Discord, OAuth, …). It is not read at runtime; leave it
 alone.
 
+## Microsoft OAuth (Outlook / Hotmail) — optional
+
+To enable the "Connect Outlook / Hotmail" button (connects a mailbox over IMAP
+XOAUTH2 without a password), register an Azure app and set
+`MICROSOFT_CLIENT_ID` + `MICROSOFT_CLIENT_SECRET`. Skip this section if you
+don't need Microsoft OAuth locally — password/app-password mailboxes work
+without it.
+
+1. Go to the [Azure Portal](https://portal.azure.com) → **App registrations**
+   → **New registration**.
+2. **Name**: anything (e.g. `Pigeon local`).
+3. **Supported account types**: choose **"Accounts in any organizational
+   directory and personal Microsoft accounts"** — this is the `common`
+   authority Pigeon authorizes against, and it's what lets personal
+   Outlook/Hotmail accounts sign in.
+4. **Redirect URI**: platform **Web**, value exactly
+   `<APP_BASE_URL>/api/oauth/microsoft/callback` — in local dev that's
+   `http://localhost:4321/api/oauth/microsoft/callback`. It must match
+   character-for-character, including the scheme and no trailing slash.
+5. Click **Register**. Copy the **Application (client) ID** into
+   `MICROSOFT_CLIENT_ID`.
+6. Go to **Certificates & secrets** → **Client secrets** → **New client
+   secret**. Copy the secret **Value** (not the Secret ID) immediately — it's
+   shown only once — into `MICROSOFT_CLIENT_SECRET`.
+7. Restart `pnpm dev` (and `pnpm dev:worker`) so the new env is picked up. The
+   connect button appears in the "Add inbox" dialog once both keys are set.
+
+The IMAP scope (`https://outlook.office.com/IMAP.AccessAsUser.All` plus
+`offline_access openid email`) is requested automatically by Pigeon — you do
+not need to pre-configure API permissions for the delegated IMAP scope in most
+tenants, but if your tenant enforces admin consent you may need an admin to
+grant it.
+
 ## Local Postgres (no Docker)
 
 ```sh

@@ -33,6 +33,8 @@ const devConfig: Config = {
   WORKER_POLL_INTERVAL_MS: 5000,
   WORKER_CONCURRENCY: 5,
   SCHEDULER_INTERVAL_MS: 60000,
+  MICROSOFT_CLIENT_ID: undefined,
+  MICROSOFT_CLIENT_SECRET: undefined,
   MISTRAL_API_KEY: undefined,
   MISTRAL_MODEL: "mistral-medium-3-5",
 };

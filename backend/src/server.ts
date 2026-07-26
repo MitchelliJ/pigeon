@@ -51,6 +51,11 @@ export function createApp(
   channelRegistry: ReturnType<
     typeof createChannelRegistry
   > = createChannelRegistry({ fetch }),
+  config: {
+    MICROSOFT_CLIENT_ID?: string;
+    MICROSOFT_CLIENT_SECRET?: string;
+    APP_BASE_URL?: string;
+  } = {},
 ): Hono {
   const app = new Hono();
 
@@ -74,7 +79,7 @@ export function createApp(
   app.route("/", mailboxesRoutes(db, vault));
   app.route("/", dashboardRoutes(db));
   app.route("/", emailsRoutes(db));
-  app.route("/", oauthRoutes(db));
+  app.route("/", oauthRoutes(db, config, { vault }));
   app.route("/", profileRoutes(db, mail));
   app.route("/", channelRoutes(db, channelRegistry, vault));
 
@@ -89,7 +94,7 @@ if (isMain) {
   const db = createDb(config.DATABASE_URL);
   const mail = createMailSender(config);
   const vault = createVault(config.VAULT_MASTER_KEY);
-  const app = createApp(db, mail, vault);
+  const app = createApp(db, mail, vault, undefined, config);
   const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
     console.log(`🕊️  Pigeon API → http://localhost:${info.port}`);
   });
